@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+set -e
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BIN="$DIR/.build/debug/tail-userspace"
+
+if [ ! -f "$BIN" ]; then
+    BIN="$DIR/.build/release/tail-userspace"
+fi
+
+if [ ! -f "$BIN" ]; then
+    echo "Building tail-userspace..."
+    swift build -c release --package-path "$DIR"
+    BIN="$DIR/.build/release/tail-userspace"
+fi
+
+exec "$BIN" "$@"

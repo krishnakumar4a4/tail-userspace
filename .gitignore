@@ -1,0 +1,10 @@
+.build/
+TailUserspace.app/
+Packages/
+Package.pins
+Package.resolved
+*.xcodeproj
+*.xcworkspace
+.DS_Store
+trayscale-upstream/
+test-run/
