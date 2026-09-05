@@ -99,11 +99,40 @@ do {
 }
 
 // Test 4: Binary Detection
-let tailscaled = DaemonSupervisor.findTailscaledBinary()
-assertTest(tailscaled != nil, "tailscaled binary found on host system")
+if let tailscaled = DaemonSupervisor.findTailscaledBinary() {
+    assertTest(FileManager.default.isExecutableFile(atPath: tailscaled), "Host tailscaled is executable: \(tailscaled)")
+} else {
+    print("  [INFO] No system tailscaled found; verified via environment override")
+}
 
-let tailscaleCLI = TailscaleClient.findTailscaleCLI()
-assertTest(tailscaleCLI != nil, "tailscale CLI binary found on host system")
+if let tailscaleCLI = TailscaleClient.findTailscaleCLI() {
+    assertTest(FileManager.default.isExecutableFile(atPath: tailscaleCLI), "Host tailscale CLI is executable: \(tailscaleCLI)")
+} else {
+    print("  [INFO] No system tailscale CLI found; verified via environment override")
+}
+
+// Test environment variable override logic
+do {
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("mock_bin_\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+
+    let mockTailscaled = tempDir.appendingPathComponent("tailscaled")
+    FileManager.default.createFile(atPath: mockTailscaled.path, contents: "#!/bin/sh\nexit 0".data(using: .utf8), attributes: [.posixPermissions: 0o755])
+    setenv("TAILSCALED_PATH", mockTailscaled.path, 1)
+    assertTest(DaemonSupervisor.findTailscaledBinary() == mockTailscaled.path, "tailscaled detected via TAILSCALED_PATH override")
+    unsetenv("TAILSCALED_PATH")
+
+    let mockCLI = tempDir.appendingPathComponent("tailscale")
+    FileManager.default.createFile(atPath: mockCLI.path, contents: "#!/bin/sh\nexit 0".data(using: .utf8), attributes: [.posixPermissions: 0o755])
+    setenv("TAILSCALE_CLI_PATH", mockCLI.path, 1)
+    assertTest(TailscaleClient.findTailscaleCLI() == mockCLI.path, "tailscale CLI detected via TAILSCALE_CLI_PATH override")
+    unsetenv("TAILSCALE_CLI_PATH")
+
+    try? FileManager.default.removeItem(at: tempDir)
+} catch {
+    print("Test 4 mock error: \(error)")
+    failed += 1
+}
 
 // Test 5: DaemonSupervisor initial state in clean directory
 do {

@@ -20,6 +20,9 @@ jobs:
           sw_vers
           swift --version
 
+      - name: Install Tailscale
+        run: brew install tailscale
+
       - name: Run Unit Tests
         run: make test
 
