@@ -148,11 +148,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
             let host = currentStatus.selfDNSName.isEmpty ? "your-node.ts.net" : currentStatus.selfDNSName
             for route in config.serveRoutes {
                 let statusBadge = route.enabled ? "✓" : "○"
-                let title = "  \(statusBadge) localhost:\(route.localPort) ➔ :\(route.servePort)\(route.path)"
+                let scheme = route.proto.lowercased()
+                let title = "  \(statusBadge) localhost:\(route.localPort) ➔ \(scheme)://:\(route.servePort)\(route.path)"
                 let item = NSMenuItem(title: title, action: #selector(serveRouteClicked(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = route
-                item.toolTip = "Click to copy https://\(host):\(route.servePort)\(route.path)"
+                item.toolTip = "Click to copy \(scheme)://\(host):\(route.servePort)\(route.path)"
                 menu.addItem(item)
             }
         }
@@ -263,7 +264,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func serveRouteClicked(_ sender: NSMenuItem) {
         guard let route = sender.representedObject as? ServeRoute else { return }
         let host = currentStatus.selfDNSName.isEmpty ? "your-node.ts.net" : currentStatus.selfDNSName
-        let url = "https://\(host):\(route.servePort)\(route.path)"
+        let url = "\(route.proto.lowercased())://\(host):\(route.servePort)\(route.path)"
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(url, forType: .string)
     }
@@ -278,21 +279,28 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func promptAddServeRoute() {
         let alert = NSAlert()
         alert.messageText = "Add Inbound Tailscale Serve Route"
-        alert.informativeText = "Expose a local service to your tailnet via HTTPS."
+        alert.informativeText = "Expose a local service (e.g. 8787 or 3000) to your tailnet via HTTPS or HTTP."
         alert.addButton(withTitle: "Add Route")
         alert.addButton(withTitle: "Cancel")
 
-        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 280, height: 60))
+        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 280, height: 95))
         stack.orientation = .vertical
         stack.spacing = 8
 
+        let protoPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 280, height: 26), pullsDown: false)
+        protoPopup.addItems(withTitles: ["HTTPS (port 443)", "HTTP (port 80)", "HTTP (port 8080)"])
+
         let localField = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        localField.placeholderString = "Local Port (e.g. 3000)"
+        localField.placeholderString = "Local Port (e.g. 8787 or 3000)"
 
         let serveField = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        serveField.placeholderString = "Serve Port (default: 443)"
+        serveField.placeholderString = "Tailnet Serve Port (default: 443)"
         serveField.stringValue = "443"
 
+        protoPopup.target = nil
+        protoPopup.action = nil
+
+        stack.addArrangedSubview(protoPopup)
         stack.addArrangedSubview(localField)
         stack.addArrangedSubview(serveField)
         alert.accessoryView = stack
@@ -300,8 +308,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
             if let localPort = Int(localField.stringValue.trimmingCharacters(in: .whitespaces)) {
-                let servePort = Int(serveField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 443
-                let route = ServeRoute(localPort: localPort, servePort: servePort)
+                let selectedProto: String
+                let defaultPort: Int
+                switch protoPopup.indexOfSelectedItem {
+                case 1:
+                    selectedProto = "http"
+                    defaultPort = 80
+                case 2:
+                    selectedProto = "http"
+                    defaultPort = 8080
+                default:
+                    selectedProto = "https"
+                    defaultPort = 443
+                }
+
+                let servePort = Int(serveField.stringValue.trimmingCharacters(in: .whitespaces)) ?? defaultPort
+                let route = ServeRoute(localPort: localPort, servePort: servePort, proto: selectedProto)
                 try? configManager.addServeRoute(route)
                 if currentStatus.isOnline {
                     try? client.applyServeRoute(route)
@@ -314,36 +336,79 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func promptAddRemoteProxy() {
         let alert = NSAlert()
         alert.messageText = "Add Outbound Remote Proxy"
-        alert.informativeText = "Map a remote tailnet host to a local port."
+        alert.informativeText = "Forward a local port on your Mac to a remote Tailnet node."
         alert.addButton(withTitle: "Add Proxy")
         alert.addButton(withTitle: "Cancel")
 
-        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 280, height: 60))
+        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 300, height: 95))
         stack.orientation = .vertical
         stack.spacing = 8
 
-        let localField = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        localField.placeholderString = "Local Port (e.g. 8080)"
+        let localField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        localField.placeholderString = "Local Port to Listen On (e.g. 9999 or 8080)"
 
-        let remoteField = NSTextField(frame: NSRect(x: 0, y: 0, width: 280, height: 24))
-        remoteField.placeholderString = "Remote Target (e.g. nas.ts.net:80)"
+        let remoteHostField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        remoteHostField.placeholderString = "Remote Host / IP (e.g. node.ts.net)"
+
+        let remotePortField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        remotePortField.placeholderString = "Remote Target Port (default: 80)"
+        remotePortField.stringValue = "80"
 
         stack.addArrangedSubview(localField)
-        stack.addArrangedSubview(remoteField)
+        stack.addArrangedSubview(remoteHostField)
+        stack.addArrangedSubview(remotePortField)
         alert.accessoryView = stack
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
             let localStr = localField.stringValue.trimmingCharacters(in: .whitespaces)
-            let remoteStr = remoteField.stringValue.trimmingCharacters(in: .whitespaces)
-            let parts = remoteStr.split(separator: ":")
-            if let localPort = Int(localStr), parts.count == 2, let remotePort = Int(parts[1]) {
-                let proxy = RemoteProxy(localPort: localPort, remoteHost: String(parts[0]), remotePort: remotePort)
-                try? configManager.addRemoteProxy(proxy)
-                forwarder.startConfiguredProxies(configManager.load())
+            var remoteHostStr = remoteHostField.stringValue.trimmingCharacters(in: .whitespaces)
+            let remotePortStr = remotePortField.stringValue.trimmingCharacters(in: .whitespaces)
+
+            guard let localPort = Int(localStr), (1...65535).contains(localPort) else {
+                showErrorAlert(title: "Invalid Local Port", message: "Please enter a valid local port number between 1 and 65535.")
+                return
+            }
+
+            guard !remoteHostStr.isEmpty else {
+                showErrorAlert(title: "Missing Remote Host", message: "Please enter a remote Tailnet hostname or IP address.")
+                return
+            }
+
+            var remotePort = Int(remotePortStr) ?? 80
+            // If user typed host:port in the remote host field, parse it out automatically
+            if remoteHostStr.contains(":") {
+                let parts = remoteHostStr.split(separator: ":")
+                if parts.count == 2, let parsedPort = Int(parts[1]) {
+                    remoteHostStr = String(parts[0])
+                    remotePort = parsedPort
+                }
+            }
+
+            guard (1...65535).contains(remotePort) else {
+                showErrorAlert(title: "Invalid Remote Port", message: "Please enter a valid target port between 1 and 65535.")
+                return
+            }
+
+            let proxy = RemoteProxy(localPort: localPort, remoteHost: remoteHostStr, remotePort: remotePort)
+            do {
+                try configManager.addRemoteProxy(proxy)
+                let config = configManager.load()
+                forwarder.startConfiguredProxies(config)
                 pollStatus()
+            } catch {
+                showErrorAlert(title: "Failed to Add Proxy", message: error.localizedDescription)
             }
         }
+    }
+
+    private func showErrorAlert(title: String, message: String) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = title
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        alert.runModal()
     }
 
     @objc private func quitApp() {

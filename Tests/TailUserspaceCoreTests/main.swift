@@ -105,9 +105,22 @@ assertTest(tailscaled != nil, "tailscaled binary found on host system")
 let tailscaleCLI = TailscaleClient.findTailscaleCLI()
 assertTest(tailscaleCLI != nil, "tailscale CLI binary found on host system")
 
-// Test 5: DaemonSupervisor initial state
-let (running, pid) = DaemonSupervisor.shared.isRunning()
-assertTest(!running && pid == nil, "Daemon is not running by default")
+// Test 5: DaemonSupervisor initial state in clean directory
+do {
+    let uniqueID = UUID().uuidString
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("tail_test_\(uniqueID)")
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    setenv("TAIL_USERSPACE_DIR", tempDir.path, 1)
+
+    let (running, pid) = DaemonSupervisor.shared.isRunning()
+    assertTest(!running && pid == nil, "Daemon is not running in clean directory")
+
+    unsetenv("TAIL_USERSPACE_DIR")
+    try? FileManager.default.removeItem(at: tempDir)
+} catch {
+    print("Test 5 error: \(error)")
+    failed += 1
+}
 
 // Test 6: SOCKS5Forwarder lifecycle
 let forwarder = SOCKS5Forwarder.shared

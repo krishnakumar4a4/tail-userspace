@@ -253,11 +253,11 @@ func handleProxyCommand(_ args: [String], configManager: ConfigManager, forwarde
             return
         }
         let targetParts = args[2].split(separator: ":")
-        guard targetParts.count == 2, let remotePort = Int(targetParts[1]) else {
-            print("Target must be in format <remoteHost>:<remotePort> (e.g. nas.ts.net:80)")
-            return
-        }
         let remoteHost = String(targetParts[0])
+        var remotePort = 80
+        if targetParts.count == 2, let p = Int(targetParts[1]) {
+            remotePort = p
+        }
         let proxy = RemoteProxy(localPort: localPort, remoteHost: remoteHost, remotePort: remotePort)
         do {
             try configManager.addRemoteProxy(proxy)

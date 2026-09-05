@@ -98,6 +98,7 @@ public final class DaemonSupervisor {
             "--tun=userspace-networking",
             "--socket=\(PathConstants.socketPath)",
             "--state=\(PathConstants.statePath)",
+            "--statedir=\(PathConstants.baseDirectory.path)",
             "--socks5-server=localhost:\(cfg.socks5Port)",
             "--outbound-http-proxy-listen=localhost:\(cfg.httpProxyPort)"
         ]

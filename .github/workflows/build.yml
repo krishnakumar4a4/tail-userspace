@@ -1,0 +1,41 @@
+name: Build & Test TailUserspace
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    name: Build, Test & Package
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show Swift & System Info
+        run: |
+          sw_vers
+          swift --version
+
+      - name: Run Unit Tests
+        run: make test
+
+      - name: Build Release & Package App Bundle
+        run: make app
+
+      - name: Compress App Bundle for Distribution
+        run: |
+          zip -r TailUserspace-macOS.zip TailUserspace.app
+          cp .build/release/tail-userspace ./tail-userspace-cli
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: TailUserspace-macOS
+          path: |
+            TailUserspace-macOS.zip
+            tail-userspace-cli
+          retention-days: 14
