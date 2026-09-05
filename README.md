@@ -1,6 +1,6 @@
 # TailUserspace for macOS
 
-[![Build & Test](https://github.com/krishnak/tail-userspace/actions/workflows/build.yml/badge.svg)](https://github.com/krishnak/tail-userspace/actions/workflows/build.yml)
+[![Build & Test](https://github.com/krishnakumar4a4/tail-userspace/actions/workflows/build.yml/badge.svg)](https://github.com/krishnakumar4a4/tail-userspace/actions/workflows/build.yml)
 ![Platform](https://img.shields.io/badge/platform-macOS%2013%2B-blue)
 ![Architecture](https://img.shields.io/badge/arch-arm64%20%7C%20x86__64-brightgreen)
 ![Swift](https://img.shields.io/badge/swift-5.9%2B-orange)
@@ -65,7 +65,7 @@ Standard Tailscale on macOS requires root/admin permissions, installs a system-w
 
 ### 1. Build & Package
 ```bash
-git clone https://github.com/krishnak/tail-userspace.git
+git clone https://github.com/krishnakumar4a4/tail-userspace.git
 cd tail-userspace
 make app
 ```
