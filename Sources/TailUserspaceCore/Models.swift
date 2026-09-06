@@ -30,8 +30,16 @@ public struct PathConstants {
         baseDirectory.appendingPathComponent("config.json").path
     }
 
+    public static var configURL: URL {
+        baseDirectory.appendingPathComponent("config.json")
+    }
+
     public static var logFilePath: String {
         logsDirectory.appendingPathComponent("tailscaled.log").path
+    }
+
+    public static var logFileURL: URL {
+        logsDirectory.appendingPathComponent("tailscaled.log")
     }
 
     public static var pidFilePath: String {

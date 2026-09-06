@@ -252,29 +252,57 @@ tail-userspace proxy remove 9999
 
 ## Menu Bar App Interface
 
-Clicking the menu bar icon reveals live status and interactive controls:
+Clicking the menu bar icon reveals live status, interactive controls, and real-time route management:
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
 │  ● Tailscale: my-mac                                                   │
-│  IP: 100.64.0.1  [Click to Copy]                                       │
+│  IP: 100.64.0.1                     (Click to copy IP)                 │
+│  Domain: my-mac.tailnet-xyz.ts.net  (Click to copy domain)             │
 ├────────────────────────────────────────────────────────────────────────┤
-│  [ Disconnect ]                                                        │
+│  Disconnect                                                         ⌘D │
+│  Re-authenticate...                                                    │
 ├────────────────────────────────────────────────────────────────────────┤
-│  Inbound Serve (Local ➔ Tailnet)                                       │
-│    ✓ localhost:8787 ➔ https://my-mac.tailnet-xyz.ts.net:443/  [Copy]   │
+│  INBOUND SERVE (LOCAL ➔ TAILNET)                                       │
+│    ● localhost:8787 ➔ https://:443/  ▶  [ Submenu:                     │
+│                                           • Active / Pause             │
+│                                           • Open in Browser            │
+│                                           • Copy Tailnet URL           │
+│                                           • Copy Local URL             │
+│                                           • Edit Route...              │
+│                                           • Delete Route... ]          │
 │    [+] Add Serve Route...                                              │
 ├────────────────────────────────────────────────────────────────────────┤
-│  Outbound Remote Proxies (Tailnet ➔ Local)                             │
-│    ✓ localhost:9999 ➔ remote-node.ts.net:8787  [Click to Open]        │
-│    [+] Add Remote Proxy...                                             │
+│  OUTBOUND REMOTE PROXIES (TAILNET ➔ LOCAL)                             │
+│    ● localhost:9443 ➔ remote-node.ts.net:443 [TLS] ▶ [ Submenu:        │
+│                                           • Active / Pause             │
+│                                           • Open Local Endpoint        │
+│                                           • Copy Local / Remote URL    │
+│                                           • Edit Proxy...              │
+│                                           • Delete Proxy... ]          │
+│    [+] Add Outbound Proxy...                                           │
 ├────────────────────────────────────────────────────────────────────────┤
-│  SOCKS5 Proxy: 127.0.0.1:1055  [Click to Copy Shell Env]               │
-│  Open Logs...                                                          │
+│  USERSPACE PROXIES & SHELL ENVIRONMENT                                 │
+│  SOCKS5 Proxy: 127.0.0.1:1055       (Click to copy address)            │
+│  HTTP Proxy: 127.0.0.1:1056         (Click to copy address)            │
+│  Copy Shell Export (ALL_PROXY)                                         │
 ├────────────────────────────────────────────────────────────────────────┤
-│  Quit TailUserspace                                                    │
+│  CONFIGURATION & DIAGNOSTICS                                           │
+│  Open Configuration File (config.json)                                 │
+│  View Configuration in App...                                          │
+│  Reveal Data Directory in Finder                                       │
+│  View Daemon Logs (tailscaled.log)                                     │
+│  Reset Tailscale Serve...                                              │
+├────────────────────────────────────────────────────────────────────────┤
+│  Tailscale Userspace v1.0 (Darwin)                                     │
+│  Quit TailUserspace                                                 ⌘Q │
 └────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Real-Time Synchronization & Route Controls
+* **Instant CLI ↔ GUI Sync**: Changes made via CLI (`tail-userspace proxy remove`, `tail-userspace proxy add`, etc.) are detected instantly via file modification timestamps and `NSMenuDelegate`, immediately refreshing the UI and forwarders whenever the menu is clicked.
+* **Edit & Delete from UI**: Every inbound serve route and outbound remote proxy contains a dedicated submenu with one-click options to **Edit Route / Proxy** (with pre-filled parameters), **Delete Route / Proxy**, or **Pause / Resume** traffic.
+* **Built-in Configuration Viewer**: Inspect raw JSON directly within the app using **"View Configuration in App..."** or open in your default editor with **"Open Configuration File"**.
 
 ---
 

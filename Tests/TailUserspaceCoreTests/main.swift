@@ -58,6 +58,13 @@ do {
     try manager.toggleServeRoute(id: route.id)
     assertTest(manager.load().serveRoutes.first?.enabled == false, "ServeRoute toggle disables it")
 
+    let updatedRoute = ServeRoute(id: route.id, localPort: 3001, servePort: 8443, proto: "https", path: "/v2", enabled: true)
+    try manager.updateServeRoute(id: route.id, updatedRoute: updatedRoute)
+    let reloadedRoute = manager.load().serveRoutes.first
+    assertTest(reloadedRoute?.localPort == 3001, "ServeRoute updated localPort matches 3001")
+    assertTest(reloadedRoute?.servePort == 8443, "ServeRoute updated servePort matches 8443")
+    assertTest(reloadedRoute?.path == "/v2", "ServeRoute updated path matches /v2")
+
     try manager.removeServeRoute(id: route.id)
     assertTest(manager.load().serveRoutes.isEmpty, "ServeRoute removed successfully")
 
@@ -94,14 +101,32 @@ do {
     let loadedTLS = loaded.remoteProxies.first { $0.localPort == 9443 }
     assertTest(loadedTLS?.terminateTLS == true, "Loaded TLS proxy has terminateTLS == true")
 
-    try manager.toggleRemoteProxy(id: proxy.id)
-    assertTest(manager.load().remoteProxies.first { $0.id == proxy.id }?.enabled == false, "RemoteProxy toggle disables it")
+    let updatedProxy = RemoteProxy(id: proxy.id, localPort: 8081, remoteHost: "nas2.tail123.ts.net", remotePort: 8080, terminateTLS: true, enabled: false)
+    try manager.updateRemoteProxy(id: proxy.id, updatedProxy: updatedProxy)
+    let reloadedProxy = manager.load().remoteProxies.first { $0.id == proxy.id }
+    assertTest(reloadedProxy?.localPort == 8081, "RemoteProxy updated localPort matches 8081")
+    assertTest(reloadedProxy?.remoteHost == "nas2.tail123.ts.net", "RemoteProxy updated remoteHost matches nas2")
+    assertTest(reloadedProxy?.terminateTLS == true, "RemoteProxy updated terminateTLS matches true")
+    assertTest(reloadedProxy?.enabled == false, "RemoteProxy updated enabled matches false")
 
-    try manager.removeRemoteProxy(id: proxy.id)
+    try manager.toggleRemoteProxy(id: proxy.id)
+    assertTest(manager.load().remoteProxies.first { $0.id == proxy.id }?.enabled == true, "RemoteProxy toggle re-enables it")
+
+    // Test 3b: Test external modification detection
+    let anotherManager = ConfigManager()
+    assertTest(anotherManager.load().remoteProxies.count == 2, "Another manager loads 2 proxies")
+    var modifiedConfig = anotherManager.load()
+    modifiedConfig.remoteProxies.removeFirst()
+    try anotherManager.save(modifiedConfig)
+
+    // Original manager should detect disk change and reload only 1 proxy
+    let externallyReloaded = manager.load()
+    assertTest(externallyReloaded.remoteProxies.count == 1, "Manager automatically detects external modification and reloads")
+
     try manager.removeRemoteProxy(id: tlsProxy.id)
     assertTest(manager.load().remoteProxies.isEmpty, "RemoteProxies removed successfully")
 
-    // Test 3b: Backward compatibility decoding of RemoteProxy without terminateTLS field
+    // Test 3c: Backward compatibility decoding of RemoteProxy without terminateTLS field
     let legacyJSON = """
     {
         "id": "legacy-1",
