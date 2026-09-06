@@ -37,7 +37,8 @@ public final class SOCKS5Forwarder {
             do {
                 try instance.start()
                 activeListeners[proxy.id] = instance
-                Logger.shared.info("Proxy forwarder active: localhost:\(proxy.localPort) ➔ \(proxy.remoteHost):\(proxy.remotePort)")
+                let mode = proxy.terminateTLS ? " [TLS Terminated]" : ""
+                Logger.shared.info("Proxy forwarder active: localhost:\(proxy.localPort) ➔ \(proxy.remoteHost):\(proxy.remotePort)\(mode)")
             } catch {
                 Logger.shared.info("Failed to bind proxy for \(proxy.remoteHost):\(proxy.remotePort) on port \(proxy.localPort): \(error)")
             }
@@ -154,6 +155,11 @@ final class ForwarderInstance {
 
     private func handleClient(clientFd: Int32) {
         defer { close(clientFd) }
+
+        if proxy.terminateTLS {
+            handleClientTLS(clientFd: clientFd)
+            return
+        }
 
         // 1. Connect to SOCKS5 proxy on 127.0.0.1:socks5Port
         let proxyFd = socket(AF_INET, SOCK_STREAM, 0)
@@ -279,5 +285,153 @@ final class ForwarderInstance {
             bytesRead += n
         }
         return true
+    }
+
+    // MARK: - Native Reverse Proxy (TLS Termination)
+
+    private func handleClientTLS(clientFd: Int32) {
+        var requestData = Data()
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        var headerEndIndex: Int? = nil
+
+        while headerEndIndex == nil {
+            let bytesRead = read(clientFd, &buffer, buffer.count)
+            guard bytesRead > 0 else { return }
+            requestData.append(buffer, count: bytesRead)
+
+            if let range = requestData.range(of: Data([0x0D, 0x0A, 0x0D, 0x0A])) { // \r\n\r\n
+                headerEndIndex = range.upperBound
+                break
+            } else if let range = requestData.range(of: Data([0x0A, 0x0A])) { // \n\n
+                headerEndIndex = range.upperBound
+                break
+            }
+            if requestData.count > 65536 { // 64KB request header limit
+                break
+            }
+        }
+
+        guard let headerEnd = headerEndIndex,
+              let headerString = String(data: requestData[..<headerEnd], encoding: .utf8) else {
+            sendHTTPError(fd: clientFd, statusCode: 400, message: "Invalid HTTP Request Header")
+            return
+        }
+
+        let lines = headerString.components(separatedBy: "\r\n").flatMap { $0.components(separatedBy: "\n") }
+        guard let reqLine = lines.first?.trimmingCharacters(in: .whitespacesAndNewlines), !reqLine.isEmpty else {
+            sendHTTPError(fd: clientFd, statusCode: 400, message: "Empty HTTP Request")
+            return
+        }
+
+        let parts = reqLine.split(separator: " ")
+        guard parts.count >= 2 else {
+            sendHTTPError(fd: clientFd, statusCode: 400, message: "Malformed Request Line")
+            return
+        }
+
+        let method = String(parts[0])
+        let path = String(parts[1])
+
+        let portSuffix = (proxy.remotePort == 443) ? "" : ":\(proxy.remotePort)"
+        let targetURLString = "https://\(proxy.remoteHost)\(portSuffix)\(path.hasPrefix("/") ? path : "/\(path)")"
+        guard let targetURL = URL(string: targetURLString) else {
+            sendHTTPError(fd: clientFd, statusCode: 400, message: "Malformed Target URL: \(targetURLString)")
+            return
+        }
+
+        var request = URLRequest(url: targetURL)
+        request.httpMethod = method
+        request.timeoutInterval = 60.0
+
+        var contentLength = 0
+        for line in lines.dropFirst() {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty { continue }
+            let kv = trimmed.split(separator: ":", maxSplits: 1)
+            guard kv.count == 2 else { continue }
+            let key = String(kv[0]).trimmingCharacters(in: .whitespaces)
+            let val = String(kv[1]).trimmingCharacters(in: .whitespaces)
+
+            if key.lowercased() == "host" {
+                request.setValue(proxy.remoteHost, forHTTPHeaderField: "Host")
+            } else if key.lowercased() == "content-length", let len = Int(val) {
+                contentLength = len
+                request.setValue(val, forHTTPHeaderField: key)
+            } else if key.lowercased() != "connection" {
+                request.setValue(val, forHTTPHeaderField: key)
+            }
+        }
+        request.setValue("close", forHTTPHeaderField: "Connection")
+
+        // Read remaining body if Content-Length > 0
+        var bodyData = Data(requestData[headerEnd...])
+        while bodyData.count < contentLength {
+            let toRead = min(buffer.count, contentLength - bodyData.count)
+            let bytesRead = read(clientFd, &buffer, toRead)
+            guard bytesRead > 0 else { break }
+            bodyData.append(buffer, count: bytesRead)
+        }
+        if !bodyData.isEmpty {
+            request.httpBody = bodyData
+        }
+
+        Logger.shared.info("Reverse proxying [TLS] \(method) \(targetURLString) (Client port \(proxy.localPort))")
+
+        let config = URLSessionConfiguration.ephemeral
+        config.connectionProxyDictionary = [
+            kCFNetworkProxiesSOCKSEnable as String: 1,
+            kCFNetworkProxiesSOCKSProxy as String: "127.0.0.1",
+            kCFNetworkProxiesSOCKSPort as String: socks5Port
+        ]
+        config.timeoutIntervalForRequest = 60.0
+        config.timeoutIntervalForResource = 120.0
+        let session = URLSession(configuration: config)
+
+        let sema = DispatchSemaphore(value: 0)
+        let task = session.dataTask(with: request) { data, response, error in
+            defer { sema.signal() }
+            if let error = error {
+                Logger.shared.info("Upstream TLS error for \(targetURLString): \(error.localizedDescription)")
+                self.sendHTTPError(fd: clientFd, statusCode: 502, message: "Bad Gateway (Upstream TLS Error): \(error.localizedDescription)")
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                self.sendHTTPError(fd: clientFd, statusCode: 502, message: "Non-HTTP response received from upstream")
+                return
+            }
+
+            var headerText = "HTTP/1.1 \(httpResponse.statusCode) \(HTTPURLResponse.localizedString(forStatusCode: httpResponse.statusCode))\r\n"
+            for (k, v) in httpResponse.allHeaderFields {
+                let keyStr = "\(k)"
+                if keyStr.lowercased() == "transfer-encoding" || keyStr.lowercased() == "connection" {
+                    continue
+                }
+                headerText += "\(keyStr): \(v)\r\n"
+            }
+            let payload = data ?? Data()
+            headerText += "Content-Length: \(payload.count)\r\n"
+            headerText += "Connection: close\r\n\r\n"
+
+            if let headerBytes = headerText.data(using: .utf8) {
+                var bytes = [UInt8](headerBytes)
+                _ = self.writeAll(fd: clientFd, buffer: &bytes, count: bytes.count)
+            }
+            if !payload.isEmpty {
+                var bodyBytes = [UInt8](payload)
+                _ = self.writeAll(fd: clientFd, buffer: &bodyBytes, count: bodyBytes.count)
+            }
+        }
+        task.resume()
+        _ = sema.wait(timeout: .now() + 120.0)
+    }
+
+    private func sendHTTPError(fd: Int32, statusCode: Int, message: String) {
+        let body = "\(statusCode) \(HTTPURLResponse.localizedString(forStatusCode: statusCode)): \(message)\n"
+        let response = "HTTP/1.1 \(statusCode) \(HTTPURLResponse.localizedString(forStatusCode: statusCode))\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+        if let data = response.data(using: .utf8) {
+            var bytes = [UInt8](data)
+            _ = writeAll(fd: fd, buffer: &bytes, count: bytes.count)
+        }
     }
 }

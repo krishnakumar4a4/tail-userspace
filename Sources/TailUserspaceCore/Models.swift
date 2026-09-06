@@ -70,14 +70,26 @@ public struct RemoteProxy: Codable, Identifiable, Equatable {
     public var localPort: Int
     public var remoteHost: String
     public var remotePort: Int
+    public var terminateTLS: Bool
     public var enabled: Bool
 
-    public init(id: String = UUID().uuidString, localPort: Int, remoteHost: String, remotePort: Int, enabled: Bool = true) {
+    public init(id: String = UUID().uuidString, localPort: Int, remoteHost: String, remotePort: Int, terminateTLS: Bool = false, enabled: Bool = true) {
         self.id = id
         self.localPort = localPort
         self.remoteHost = remoteHost
         self.remotePort = remotePort
+        self.terminateTLS = terminateTLS
         self.enabled = enabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.localPort = try container.decode(Int.self, forKey: .localPort)
+        self.remoteHost = try container.decode(String.self, forKey: .remoteHost)
+        self.remotePort = try container.decode(Int.self, forKey: .remotePort)
+        self.terminateTLS = try container.decodeIfPresent(Bool.self, forKey: .terminateTLS) ?? false
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
     }
 }
 

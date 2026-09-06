@@ -27,8 +27,9 @@ func printUsage() {
       
     PROXY COMMANDS (Tailnet Route -> Localhost Port):
       proxy list         List all configured Outbound Remote Proxies
-      proxy add <localPort> <remoteHost:remotePort>
+      proxy add <localPort> <remoteHost:remotePort> [--tls]
                          Forward a local port to a remote tailnet host via SOCKS5
+                         Use --tls to terminate remote TLS and expose as plain HTTP locally
       proxy remove <localPort>
                          Remove a configured Outbound Remote Proxy
                          
@@ -148,7 +149,8 @@ func main() {
         } else {
             for proxy in config.remoteProxies {
                 let state = proxy.enabled ? "✓ Active" : "○ Inactive"
-                print("  [\(state)] localhost:\(proxy.localPort) ➔ \(proxy.remoteHost):\(proxy.remotePort)")
+                let tlsBadge = proxy.terminateTLS ? " [TLS]" : ""
+                print("  [\(state)\(tlsBadge)] localhost:\(proxy.localPort) ➔ \(proxy.remoteHost):\(proxy.remotePort)")
             }
         }
 
@@ -317,12 +319,13 @@ func handleProxyCommand(_ args: [String], configManager: ConfigManager, forwarde
         print("Configured Outbound Remote Proxies:")
         for p in config.remoteProxies {
             let state = p.enabled ? "Active" : "Disabled"
-            print("  • [\(state)] localhost:\(p.localPort) ➔ \(p.remoteHost):\(p.remotePort)")
+            let tlsBadge = p.terminateTLS ? " [TLS]" : ""
+            print("  • [\(state)\(tlsBadge)] localhost:\(p.localPort) ➔ \(p.remoteHost):\(p.remotePort)")
         }
 
     case "add":
         guard args.count >= 3, let localPort = Int(args[1]) else {
-            print("Usage: tail-userspace proxy add <localPort> <remoteHost:remotePort>")
+            print("Usage: tail-userspace proxy add <localPort> <remoteHost:remotePort> [--tls]")
             return
         }
         let targetParts = args[2].split(separator: ":")
@@ -331,10 +334,14 @@ func handleProxyCommand(_ args: [String], configManager: ConfigManager, forwarde
         if targetParts.count == 2, let p = Int(targetParts[1]) {
             remotePort = p
         }
-        let proxy = RemoteProxy(localPort: localPort, remoteHost: remoteHost, remotePort: remotePort)
+
+        let terminateTLS = args.contains("--tls") || args.contains("--terminate-tls")
+
+        let proxy = RemoteProxy(localPort: localPort, remoteHost: remoteHost, remotePort: remotePort, terminateTLS: terminateTLS)
         do {
             try configManager.addRemoteProxy(proxy)
-            print("✓ Saved remote proxy: localhost:\(localPort) ➔ \(remoteHost):\(remotePort)")
+            let modeDesc = terminateTLS ? " [TLS: Plain HTTP locally ➔ HTTPS upstream]" : ""
+            print("✓ Saved remote proxy: localhost:\(localPort) ➔ \(remoteHost):\(remotePort)\(modeDesc)")
             let config = configManager.load()
             forwarder.startConfiguredProxies(config)
             print("✓ Proxy forwarder active on localhost:\(localPort)")

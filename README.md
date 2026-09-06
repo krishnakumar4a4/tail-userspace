@@ -224,18 +224,29 @@ tail-userspace serve reset
 Map a remote tailnet machine's port directly to a local port on your Mac using the unprivileged SOCKS5 forwarder:
 
 ```bash
-# Forward local port 9999 to remote-host.ts.net:8787
+# Forward local port 9999 to remote-host.ts.net:8787 (raw TCP pass-through)
 tail-userspace proxy add 9999 remote-host.ts.net:8787
 
 # Forward local port 8080 to remote-nas.ts.net:80 (port defaults to 80 if omitted)
 tail-userspace proxy add 8080 remote-nas.ts.net
 
-# List active remote proxies
+# Forward local port 9443 to remote HTTPS endpoint with automatic TLS termination:
+# Connects to remote-service.ts.net:443 via HTTPS over SOCKS5, terminates TLS natively
+# with Apple Keychain / Let's Encrypt validation, and serves plain HTTP to localhost.
+tail-userspace proxy add 9443 remote-service.ts.net:443 --tls
+
+# Now your local application or curl can talk directly without SNI or certificate mismatch:
+curl http://localhost:9443/api/v1/status
+
+# List active remote proxies (shows [TLS] badge for terminated endpoints)
 tail-userspace proxy list
 
 # Remove a remote proxy
 tail-userspace proxy remove 9999
 ```
+
+> [!TIP]
+> In the Menu Bar App, clicking **"Add Outbound Proxy..."** presents a checkbox: **"Terminate remote TLS (upstream HTTPS -> local HTTP)"** allowing one-click configuration of TLS reverse proxies.
 
 ---
 

@@ -77,19 +77,42 @@ do {
 
     let manager = ConfigManager()
     let proxy = RemoteProxy(localPort: 8080, remoteHost: "nas.tail123.ts.net", remotePort: 80)
+    assertTest(proxy.terminateTLS == false, "RemoteProxy default terminateTLS is false")
     try manager.addRemoteProxy(proxy)
 
+    let tlsProxy = RemoteProxy(localPort: 9443, remoteHost: "secure.tail123.ts.net", remotePort: 443, terminateTLS: true)
+    assertTest(tlsProxy.terminateTLS == true, "RemoteProxy terminateTLS true")
+    try manager.addRemoteProxy(tlsProxy)
+
     let loaded = manager.load()
-    assertTest(loaded.remoteProxies.count == 1, "RemoteProxy added successfully")
+    assertTest(loaded.remoteProxies.count == 2, "RemoteProxies added successfully")
     assertTest(loaded.remoteProxies.first?.localPort == 8080, "RemoteProxy localPort matches")
     assertTest(loaded.remoteProxies.first?.remoteHost == "nas.tail123.ts.net", "RemoteProxy remoteHost matches")
     assertTest(loaded.remoteProxies.first?.remotePort == 80, "RemoteProxy remotePort matches")
+    assertTest(loaded.remoteProxies.first?.terminateTLS == false, "RemoteProxy terminateTLS matches false")
+
+    let loadedTLS = loaded.remoteProxies.first { $0.localPort == 9443 }
+    assertTest(loadedTLS?.terminateTLS == true, "Loaded TLS proxy has terminateTLS == true")
 
     try manager.toggleRemoteProxy(id: proxy.id)
-    assertTest(manager.load().remoteProxies.first?.enabled == false, "RemoteProxy toggle disables it")
+    assertTest(manager.load().remoteProxies.first { $0.id == proxy.id }?.enabled == false, "RemoteProxy toggle disables it")
 
     try manager.removeRemoteProxy(id: proxy.id)
-    assertTest(manager.load().remoteProxies.isEmpty, "RemoteProxy removed successfully")
+    try manager.removeRemoteProxy(id: tlsProxy.id)
+    assertTest(manager.load().remoteProxies.isEmpty, "RemoteProxies removed successfully")
+
+    // Test 3b: Backward compatibility decoding of RemoteProxy without terminateTLS field
+    let legacyJSON = """
+    {
+        "id": "legacy-1",
+        "localPort": 7070,
+        "remoteHost": "legacy.ts.net",
+        "remotePort": 80,
+        "enabled": true
+    }
+    """.data(using: .utf8)!
+    let decodedLegacy = try JSONDecoder().decode(RemoteProxy.self, from: legacyJSON)
+    assertTest(decodedLegacy.terminateTLS == false, "Legacy RemoteProxy JSON without terminateTLS decodes to false")
 
     unsetenv("TAIL_USERSPACE_DIR")
     try? FileManager.default.removeItem(at: tempDir)

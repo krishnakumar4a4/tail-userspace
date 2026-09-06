@@ -176,7 +176,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             for proxy in config.remoteProxies {
                 let statusBadge = proxy.enabled ? "✓" : "○"
-                let title = "  \(statusBadge) localhost:\(proxy.localPort) ➔ \(proxy.remoteHost):\(proxy.remotePort)"
+                let tlsTag = proxy.terminateTLS ? " [TLS]" : ""
+                let title = "  \(statusBadge) localhost:\(proxy.localPort) ➔ \(proxy.remoteHost):\(proxy.remotePort)\(tlsTag)"
                 let item = NSMenuItem(title: title, action: #selector(remoteProxyClicked(_:)), keyEquivalent: "")
                 item.target = self
                 item.representedObject = proxy
@@ -340,23 +341,27 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "Add Proxy")
         alert.addButton(withTitle: "Cancel")
 
-        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 300, height: 95))
+        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 320, height: 125))
         stack.orientation = .vertical
         stack.spacing = 8
 
-        let localField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        let localField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
         localField.placeholderString = "Local Port to Listen On (e.g. 9999 or 8080)"
 
-        let remoteHostField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        let remoteHostField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
         remoteHostField.placeholderString = "Remote Host / IP (e.g. node.ts.net)"
 
-        let remotePortField = NSTextField(frame: NSRect(x: 0, y: 0, width: 300, height: 24))
+        let remotePortField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
         remotePortField.placeholderString = "Remote Target Port (default: 80)"
         remotePortField.stringValue = "80"
+
+        let tlsCheckbox = NSButton(checkboxWithTitle: "Terminate remote TLS (upstream HTTPS -> local HTTP)", target: nil, action: nil)
+        tlsCheckbox.state = .off
 
         stack.addArrangedSubview(localField)
         stack.addArrangedSubview(remoteHostField)
         stack.addArrangedSubview(remotePortField)
+        stack.addArrangedSubview(tlsCheckbox)
         alert.accessoryView = stack
 
         NSApp.activate(ignoringOtherApps: true)
@@ -390,7 +395,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            let proxy = RemoteProxy(localPort: localPort, remoteHost: remoteHostStr, remotePort: remotePort)
+            let terminateTLS = (tlsCheckbox.state == .on)
+            let proxy = RemoteProxy(localPort: localPort, remoteHost: remoteHostStr, remotePort: remotePort, terminateTLS: terminateTLS)
             do {
                 try configManager.addRemoteProxy(proxy)
                 let config = configManager.load()
