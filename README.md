@@ -245,13 +245,13 @@ Clicking the menu bar icon reveals live status and interactive controls:
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
-│  ● Tailscale: my-mac                                        │
-│  IP: 100.64.0.1  [Click to Copy]                                    │
+│  ● Tailscale: my-mac                                                   │
+│  IP: 100.64.0.1  [Click to Copy]                                       │
 ├────────────────────────────────────────────────────────────────────────┤
 │  [ Disconnect ]                                                        │
 ├────────────────────────────────────────────────────────────────────────┤
 │  Inbound Serve (Local ➔ Tailnet)                                       │
-│    ✓ localhost:8787 ➔ https://my-mac.ts.net:443/  [Copy]    │
+│    ✓ localhost:8787 ➔ https://my-mac.tailnet-xyz.ts.net:443/  [Copy]   │
 │    [+] Add Serve Route...                                              │
 ├────────────────────────────────────────────────────────────────────────┤
 │  Outbound Remote Proxies (Tailnet ➔ Local)                             │

@@ -1,12 +1,49 @@
+# Antigravity & Agent artifacts / local skills
+.agents/
+.gemini/
+.antigravity/
+.brain/
+
+# Swift / SwiftPM build artifacts
 .build/
-TailUserspace.app/
 Packages/
 Package.pins
 Package.resolved
-*.xcodeproj
-*.xcworkspace
-.DS_Store
-trayscale-upstream/
-test-run/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+
+# macOS Application Bundles & Distribution Packages
+TailUserspace.app/
+*.app/
 TailUserspace-macOS.zip
+*.zip
 tail-userspace-cli
+
+# TailUserspace runtime sockets, state, and PID files
+*.sock
+*.state
+*.pid
+*.log
+*.log.*
+test-run/
+scratch/
+
+# macOS system & Finder metadata
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor & IDE configurations
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+*.bak
+
+# Upstream reference source (untracked)
+trayscale-upstream/
