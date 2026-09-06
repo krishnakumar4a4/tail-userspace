@@ -37,8 +37,9 @@ public final class SOCKS5Forwarder {
             do {
                 try instance.start()
                 activeListeners[proxy.id] = instance
+                Logger.shared.info("Proxy forwarder active: localhost:\(proxy.localPort) ➔ \(proxy.remoteHost):\(proxy.remotePort)")
             } catch {
-                print("[SOCKS5Forwarder] Failed to bind proxy for \(proxy.remoteHost):\(proxy.remotePort) on port \(proxy.localPort): \(error)")
+                Logger.shared.info("Failed to bind proxy for \(proxy.remoteHost):\(proxy.remotePort) on port \(proxy.localPort): \(error)")
             }
         }
     }

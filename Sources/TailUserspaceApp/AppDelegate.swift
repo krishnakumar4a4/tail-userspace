@@ -223,7 +223,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func connectTailscale() {
         DispatchQueue.global().async { [weak self] in
-            try? self?.client.connect()
+            try? self?.client.connect(timeout: 180.0, autoOpenBrowser: true)
             DispatchQueue.main.async { self?.pollStatus() }
         }
     }

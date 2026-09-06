@@ -157,6 +157,18 @@ assertTest(!forwarder.isProxyRunning(id: "fake-id"), "Unknown proxy ID is not ru
 forwarder.stopAll()
 assertTest(true, "stopAll completed cleanly")
 
+// Test 7: Logger and VerbosityLevel
+let logger = Logger.shared
+logger.level = .normal
+assertTest(logger.level == .normal, "Logger level normal")
+logger.level = .verbose
+assertTest(logger.level == .verbose, "Logger level updates to verbose")
+logger.level = .debug
+assertTest(logger.level == .debug, "Logger level updates to debug")
+assertTest(VerbosityLevel.normal < VerbosityLevel.verbose, "VerbosityLevel ordering normal < verbose")
+assertTest(VerbosityLevel.verbose < VerbosityLevel.debug, "VerbosityLevel ordering verbose < debug")
+logger.level = .normal
+
 print("\n=== Test Results: \(passed) passed, \(failed) failed ===")
 if failed > 0 {
     exit(1)

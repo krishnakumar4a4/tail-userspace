@@ -8,3 +8,5 @@ Package.resolved
 .DS_Store
 trayscale-upstream/
 test-run/
+TailUserspace-macOS.zip
+tail-userspace-cli

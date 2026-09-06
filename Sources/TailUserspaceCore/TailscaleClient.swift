@@ -67,6 +67,8 @@ public final class TailscaleClient {
         var fullArgs = ["--socket=\(PathConstants.socketPath)"]
         fullArgs.append(contentsOf: args)
 
+        Logger.shared.info("Executing: \(cli) \(fullArgs.joined(separator: " "))")
+
         let process = Process()
         process.executableURL = URL(fileURLWithPath: cli)
         process.arguments = fullArgs
@@ -76,15 +78,16 @@ public final class TailscaleClient {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
 
+        let startTime = Date()
         try process.run()
 
         // Wait with timeout
-        let startTime = Date()
         while process.isRunning && Date().timeIntervalSince(startTime) < timeout {
             usleep(50_000) // 50ms
         }
         if process.isRunning {
             process.terminate()
+            Logger.shared.debug("Command timed out after \(timeout)s: \(args.joined(separator: " "))")
             throw TailscaleClientError.commandFailed(
                 command: args.joined(separator: " "),
                 code: -1,
@@ -97,6 +100,15 @@ public final class TailscaleClient {
 
         let stdoutStr = String(data: stdoutData, encoding: .utf8) ?? ""
         let stderrStr = String(data: stderrData, encoding: .utf8) ?? ""
+        let duration = Date().timeIntervalSince(startTime)
+
+        Logger.shared.debug("Command exited with code \(process.terminationStatus) in \(String(format: "%.3f", duration))s")
+        if !stdoutStr.isEmpty {
+            Logger.shared.trace("stdout:\n\(stdoutStr)")
+        }
+        if !stderrStr.isEmpty {
+            Logger.shared.trace("stderr:\n\(stderrStr)")
+        }
 
         if process.terminationStatus != 0 {
             throw TailscaleClientError.commandFailed(
@@ -152,8 +164,137 @@ public final class TailscaleClient {
 
     // MARK: - Connection Controls
 
-    public func connect() throws {
-        try runCommand(["up"])
+    /// Connects to the tailnet, streaming real-time output and detecting Auth URLs
+    public func connect(
+        extraArgs: [String] = [],
+        timeout: TimeInterval = 180.0,
+        autoOpenBrowser: Bool = true,
+        onAuthURL: ((URL) -> Void)? = nil,
+        onOutput: ((String) -> Void)? = nil
+    ) throws {
+        // Ensure daemon is started
+        let (running, _) = DaemonSupervisor.shared.isRunning()
+        if !running {
+            Logger.shared.info("Tailscale userspace daemon is not running. Starting...")
+            _ = try DaemonSupervisor.shared.start()
+        }
+
+        guard let cli = Self.findTailscaleCLI() else {
+            throw TailscaleClientError.tailscaleCLINotFound
+        }
+
+        var fullArgs = ["--socket=\(PathConstants.socketPath)", "up"]
+        fullArgs.append(contentsOf: extraArgs)
+
+        Logger.shared.info("Executing: \(cli) \(fullArgs.joined(separator: " "))")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cli)
+        process.arguments = fullArgs
+
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+
+        let lock = NSLock()
+        var authURLHandled = false
+        var accumulatedOutput = ""
+
+        func processIncomingText(_ text: String) {
+            lock.lock()
+            accumulatedOutput += text
+            lock.unlock()
+
+            onOutput?(text)
+            Logger.shared.trace("stream: \(text)")
+
+            // Look for auth URL in stream
+            if !authURLHandled {
+                let pattern = #"https://login\.tailscale\.com/[^\s)]+"#
+                if let regex = try? NSRegularExpression(pattern: pattern, options: []),
+                   let match = regex.firstMatch(in: text, options: [], range: NSRange(location: 0, length: text.utf16.count)),
+                   let range = Range(match.range, in: text) {
+                    let rawURL = String(text[range]).trimmingCharacters(in: CharacterSet(charactersIn: ".,;:\"'<>[]()"))
+                    if let url = URL(string: rawURL) {
+                        lock.lock()
+                        authURLHandled = true
+                        lock.unlock()
+
+                        onAuthURL?(url)
+                        if autoOpenBrowser {
+                            Self.openInBrowser(url)
+                        }
+                    }
+                }
+            }
+        }
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
+            processIncomingText(str)
+        }
+
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
+            processIncomingText(str)
+        }
+
+        let startTime = Date()
+        try process.run()
+
+        // Wait with timeout, while also checking status periodically for AuthURL
+        while process.isRunning && Date().timeIntervalSince(startTime) < timeout {
+            if !authURLHandled {
+                let st = getStatus()
+                if let authStr = st.authURL, let url = URL(string: authStr) {
+                    lock.lock()
+                    authURLHandled = true
+                    lock.unlock()
+
+                    onAuthURL?(url)
+                    if autoOpenBrowser {
+                        Self.openInBrowser(url)
+                    }
+                }
+            }
+            usleep(150_000) // 150ms
+        }
+
+        stdoutPipe.fileHandleForReading.readabilityHandler = nil
+        stderrPipe.fileHandleForReading.readabilityHandler = nil
+
+        if process.isRunning {
+            process.terminate()
+            Logger.shared.debug("tailscale up process terminated after timeout (\(timeout)s)")
+            throw TailscaleClientError.commandFailed(
+                command: "up",
+                code: -1,
+                errorOutput: "Authentication / connection timed out after \(Int(timeout))s. Please re-run 'tail-userspace up' or check 'tail-userspace status'."
+            )
+        }
+
+        let duration = Date().timeIntervalSince(startTime)
+        Logger.shared.debug("tailscale up completed with exit code \(process.terminationStatus) in \(String(format: "%.2f", duration))s")
+
+        if process.terminationStatus != 0 {
+            throw TailscaleClientError.commandFailed(
+                command: "up",
+                code: process.terminationStatus,
+                errorOutput: accumulatedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+    }
+
+    /// Automatically opens URL in default macOS web browser
+    public static func openInBrowser(_ url: URL) {
+        Logger.shared.info("Opening browser for login URL: \(url.absoluteString)")
+        let openProcess = Process()
+        openProcess.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        openProcess.arguments = [url.absoluteString]
+        try? openProcess.run()
     }
 
     public func disconnect() throws {

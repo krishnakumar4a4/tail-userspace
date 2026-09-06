@@ -87,6 +87,11 @@ public final class DaemonSupervisor {
         let cfg = config ?? ConfigManager.shared.load()
         try PathConstants.ensureDirectoriesExist()
 
+        Logger.shared.info("Using tailscaled binary: \(binaryPath)")
+        Logger.shared.debug("Socket path: \(PathConstants.socketPath)")
+        Logger.shared.debug("State path:  \(PathConstants.statePath)")
+        Logger.shared.debug("Logs path:   \(PathConstants.logFilePath)")
+
         // Clean up stale socket if daemon is not running
         if FileManager.default.fileExists(atPath: PathConstants.socketPath) {
             try? FileManager.default.removeItem(atPath: PathConstants.socketPath)
@@ -102,6 +107,8 @@ public final class DaemonSupervisor {
             "--socks5-server=localhost:\(cfg.socks5Port)",
             "--outbound-http-proxy-listen=localhost:\(cfg.httpProxyPort)"
         ]
+
+        Logger.shared.debug("Arguments: \(process.arguments?.joined(separator: " ") ?? "")")
 
         // Redirect stdout/stderr to log file
         let logURL = URL(fileURLWithPath: PathConstants.logFilePath)
@@ -122,11 +129,13 @@ public final class DaemonSupervisor {
         let pid = process.processIdentifier
         try "\(pid)".write(toFile: PathConstants.pidFilePath, atomically: true, encoding: .utf8)
         self.process = process
+        Logger.shared.info("Daemon process spawned (PID: \(pid)). Awaiting unix socket...")
 
         // Wait up to 4 seconds for socket to be ready
         let startTime = Date()
         while Date().timeIntervalSince(startTime) < 4.0 {
             if FileManager.default.fileExists(atPath: PathConstants.socketPath) {
+                Logger.shared.debug("Socket detected and ready at \(PathConstants.socketPath)")
                 return pid
             }
             usleep(100_000) // 100ms
@@ -146,6 +155,7 @@ public final class DaemonSupervisor {
             return
         }
 
+        Logger.shared.info("Sending SIGTERM to daemon process (PID: \(targetPID))...")
         // Send SIGTERM
         kill(targetPID, SIGTERM)
 
