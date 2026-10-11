@@ -143,14 +143,14 @@ func main() {
             }
         }
 
-        print("\n--- Outbound Remote Proxies (Tailnet -> Local) ---")
+        print("\n--- Outbound Remote Proxies (Local <- Tailnet) ---")
         if config.remoteProxies.isEmpty {
             print("  (None configured)")
         } else {
             for proxy in config.remoteProxies {
                 let state = proxy.enabled ? "✓ Active" : "○ Inactive"
                 let tlsBadge = proxy.terminateTLS ? " [TLS]" : ""
-                print("  [\(state)\(tlsBadge)] localhost:\(proxy.localPort) ➔ \(proxy.remoteHost):\(proxy.remotePort)")
+                print("  [\(state)\(tlsBadge)] localhost:\(proxy.localPort) ← \(proxy.remoteHost):\(proxy.remotePort)")
             }
         }
 
@@ -316,11 +316,11 @@ func handleProxyCommand(_ args: [String], configManager: ConfigManager, forwarde
     switch action {
     case "list":
         let config = configManager.load()
-        print("Configured Outbound Remote Proxies:")
+        print("Configured Outbound Remote Proxies (Local <- Tailnet):")
         for p in config.remoteProxies {
             let state = p.enabled ? "Active" : "Disabled"
             let tlsBadge = p.terminateTLS ? " [TLS]" : ""
-            print("  • [\(state)\(tlsBadge)] localhost:\(p.localPort) ➔ \(p.remoteHost):\(p.remotePort)")
+            print("  • [\(state)\(tlsBadge)] localhost:\(p.localPort) ← \(p.remoteHost):\(p.remotePort)")
         }
 
     case "add":
@@ -341,7 +341,7 @@ func handleProxyCommand(_ args: [String], configManager: ConfigManager, forwarde
         do {
             try configManager.addRemoteProxy(proxy)
             let modeDesc = terminateTLS ? " [TLS: Plain HTTP locally ➔ HTTPS upstream]" : ""
-            print("✓ Saved remote proxy: localhost:\(localPort) ➔ \(remoteHost):\(remotePort)\(modeDesc)")
+            print("✓ Saved remote proxy: localhost:\(localPort) ← \(remoteHost):\(remotePort)\(modeDesc)")
             let config = configManager.load()
             forwarder.startConfiguredProxies(config)
             print("✓ Proxy forwarder active on localhost:\(localPort)")

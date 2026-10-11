@@ -38,7 +38,7 @@ public final class SOCKS5Forwarder {
                 try instance.start()
                 activeListeners[proxy.id] = instance
                 let mode = proxy.terminateTLS ? " [TLS Terminated]" : ""
-                Logger.shared.info("Proxy forwarder active: localhost:\(proxy.localPort) ➔ \(proxy.remoteHost):\(proxy.remotePort)\(mode)")
+                Logger.shared.info("Proxy forwarder active: localhost:\(proxy.localPort) ← \(proxy.remoteHost):\(proxy.remotePort)\(mode)")
             } catch {
                 Logger.shared.info("Failed to bind proxy for \(proxy.remoteHost):\(proxy.remotePort) on port \(proxy.localPort): \(error)")
             }

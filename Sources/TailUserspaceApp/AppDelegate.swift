@@ -112,7 +112,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
 
         menu.addItem(NSMenuItem.separator())
 
-        // 4. Outbound Remote Proxies (Tailnet ➔ Local)
+        // 4. Outbound Remote Proxies (Local ← Tailnet)
         buildProxySection(menu: menu, config: config)
 
         menu.addItem(NSMenuItem.separator())
@@ -316,7 +316,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
     }
 
     private func buildProxySection(menu: NSMenu, config: TailUserspaceConfig) {
-        menu.addItem(makeSectionHeader(title: "Outbound Remote Proxies (Tailnet ➔ Local)"))
+        menu.addItem(makeSectionHeader(title: "Outbound Remote Proxies (Local ← Tailnet)"))
 
         if config.remoteProxies.isEmpty {
             let emptyItem = NSMenuItem(title: "  (No remote proxies configured)", action: nil, keyEquivalent: "")
@@ -326,7 +326,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
             for proxy in config.remoteProxies {
                 let dot = proxy.enabled ? "●" : "○"
                 let tlsTag = proxy.terminateTLS ? " [TLS]" : ""
-                let title = "  \(dot) localhost:\(proxy.localPort) ➔ \(proxy.remoteHost):\(proxy.remotePort)\(tlsTag)"
+                let title = "  \(dot) localhost:\(proxy.localPort) ← \(proxy.remoteHost):\(proxy.remotePort)\(tlsTag)"
 
                 let proxyItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
                 let sub = NSMenu()
@@ -927,7 +927,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Delete Outbound Remote Proxy?"
-        alert.informativeText = "Are you sure you want to delete the proxy for localhost:\(proxy.localPort) (➔ \(proxy.remoteHost):\(proxy.remotePort))?"
+        alert.informativeText = "Are you sure you want to delete the proxy for localhost:\(proxy.localPort) (← \(proxy.remoteHost):\(proxy.remotePort))?"
         alert.addButton(withTitle: "Delete")
         alert.addButton(withTitle: "Cancel")
 

@@ -50,8 +50,8 @@ TailUserspace lives quietly in your macOS menu bar, providing real-time status a
 │                                           • Delete Route... ]          │
 │    [+] Add Serve Route...                                              │
 ├────────────────────────────────────────────────────────────────────────┤
-│  OUTBOUND REMOTE PROXIES (TAILNET ➔ LOCAL)                             │
-│    ● localhost:9443 ➔ remote-node.ts.net:443 [TLS] ▶ [ Submenu:        │
+│  OUTBOUND REMOTE PROXIES (LOCAL ← TAILNET)                             │
+│    ● localhost:9443 ← remote-node.ts.net:443 [TLS] ▶ [ Submenu:        │
 │                                           • Active / Pause             │
 │                                           • Open Local Endpoint        │
 │                                           • Copy Local / Remote URL    │

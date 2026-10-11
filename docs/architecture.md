@@ -63,7 +63,7 @@ Userspace networking bridges traffic between your Mac and remote tailnet nodes u
                         └───────┬───────────▲───────┘
                                 │           │
          INBOUND ROUTING        │           │    OUTBOUND ROUTING
-   Local Port ➔ Tailnet HTTPS   │           │    Tailnet Route ➔ Local Port
+   Local Port ➔ Tailnet HTTPS   │           │    Local Port ← Tailnet Route
                                 │           │
    tailscale serve              │           │    App listens on localhost:PORT
    (Auto Let's Encrypt TLS)     │           │    Forwards via SOCKS5 proxy (1055)
@@ -78,7 +78,7 @@ Userspace networking bridges traffic between your Mac and remote tailnet nodes u
 * Leverages Tailscale's built-in `serve` feature (`tailscale serve --bg`).
 * Automatic HTTPS with automated Let's Encrypt certificates managed by MagicDNS (e.g. `https://my-mac.tailnet-xyz.ts.net:443`).
 
-### Outbound Remote Proxy (Tailnet ➔ Localhost Port)
+### Outbound Remote Proxy (Local ← Tailnet)
 * Maps remote tailnet services (e.g. `remote-nas.ts.net:80` or `db-node.ts.net:5432`) to local listening ports on your Mac (e.g. `localhost:8080`).
 * Implemented via `SOCKS5Forwarder.swift`, a lightweight, multi-client asynchronous forwarder.
 * When a local connection arrives at `127.0.0.1:<localPort>`, the forwarder negotiates a connection with `tailscaled`'s local SOCKS5 proxy (`127.0.0.1:1055`), establishing an end-to-end TCP stream to the destination.

@@ -59,7 +59,7 @@ Each configured route displays its active status (`●` for enabled, `○` for p
 
 ---
 
-## 4. Managing Outbound Remote Proxies (Tailnet ➔ Local)
+## 4. Managing Outbound Remote Proxies (Local ← Tailnet)
 
 Outbound remote proxies forward a local port on your Mac to a remote service on your tailnet using unprivileged SOCKS5 forwarding.
 
