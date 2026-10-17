@@ -14,6 +14,7 @@ TailUserspace lives quietly in your macOS menu bar without Dock clutter (`LSUIEl
 | `network.badge.shield.half.filled` | **Online + Active Routes** | Connected with active Serve routes or Remote Proxies. |
 | `network.slash` | **Disconnected** | Userspace daemon process is running, but tailnet connection is down. |
 | `xmark.circle` | **Stopped** | Unprivileged `tailscaled` daemon is not currently running. |
+| `[CLI]` Badge | **Ephemeral CLI Session** | Displayed next to the status icon whenever a foreground terminal session (`tail-userspace serve <target>`) is running attached. Disappears automatically when the CLI stops. |
 
 ---
 
@@ -37,25 +38,34 @@ TailUserspace lives quietly in your macOS menu bar without Dock clutter (`LSUIEl
 
 Inbound serve exposes a local service running on your Mac (e.g., a local development server on port 3000) to other machines on your tailnet with automatic HTTPS.
 
-### Adding a Serve Route:
-1. Click **Add Serve Route...** from the menu.
-2. Select the protocol:
-   * **HTTPS (port 443)** (Recommended: automatic Let's Encrypt certificates)
-   * **HTTP (port 80)**
-   * **HTTP (port 8080)**
-3. Enter your **Local Port** (e.g., `3000`).
-4. Enter the **Tailnet Serve Port** (defaults to 443).
-5. Click **Add Route**.
+### Modern Add & Edit Dialogs
+The app features modern, descriptive dialogs with clear explanations:
+* **Local Target Service**: Supports port numbers (`3000`), full URLs (`http://localhost:3000/api`), and self-signed HTTPS backends (`https+insecure://localhost:8443`).
+* **Tailnet Protocol & Port**:
+  * **HTTPS (Port 443)** (Recommended: automatic Let's Encrypt certificates from MagicDNS)
+  * **HTTP (Port 80)** (Plain web forwarding)
+  * **HTTP Alternate (Port 8080)**
+  * **TCP Passthrough** (Raw Layer 4 TCP forwarding)
+  * **TLS-Terminated TCP** (Terminates TLS, forwards decrypted plain TCP)
+* **Tailnet Path Prefix (`--set-path`)**: Allows mounting multiple web services on the same domain under different paths (e.g., `/` or `/api`).
+* **Informative Architecture Card**: Explains how Tailscale Serve secures and routes inbound traffic.
+
+### Discrepancy & Ephemeral Indicators
+The menu actively inspects live daemon state against `config.json`:
+* `● <target>`: Route active and in sync with the live daemon.
+* `⚠️ <target> (Not on daemon)`: Route is enabled in `config.json` but not running on the live daemon. Clicking provides a **Reapply to Live Daemon** action.
+* `🔄 <target> (Target mismatch)`: Live daemon target differs from `config.json`.
+* `⚡ [CLI] <target>`: Ephemeral foreground session started from the CLI. Displays process PID and provides a **Stop CLI Session** button.
+* `ℹ️ [Daemon] <target>`: Live route running on the daemon but unmanaged in `config.json`. Provides **Save to Config** or **Turn Off on Daemon**.
 
 ### Route Context Submenu:
-Each configured route displays its active status (`●` for enabled, `○` for paused). Clicking any route opens a dedicated submenu:
-
-* **Active (Click to Pause) / Paused (Click to Enable)**: Toggle the route without deleting its configuration.
-* **Open in Browser**: Opens `https://<node>.ts.net:<port><path>` in Safari/default browser.
-* **Copy Tailnet URL**: Copies the public MagicDNS URL to clipboard.
-* **Copy Local URL**: Copies `http://localhost:<localPort>`.
-* **Edit Route...**: Opens a modal pre-filled with the route's current local port, serve port, protocol, path, and enabled state.
-* **Delete Route...**: Prompts for confirmation and permanently removes the route.
+Each configured route displays its active status. Clicking opens its submenu:
+* **Active (Click to Pause) / Paused (Click to Enable)**: Toggling off unmounts the live handler from the daemon immediately; toggling on reapplies it.
+* **Open in Browser**: Opens the route in Safari/default browser.
+* **Copy Tailnet URL**: Copies the MagicDNS URL to clipboard.
+* **Copy Local Target**: Copies the local port or target URL.
+* **Edit Route...**: Opens a modern dialog pre-filled with all settings.
+* **Delete Route...**: Prompts for confirmation and live-unmounts the route from the daemon before removing it from configuration.
 
 ---
 

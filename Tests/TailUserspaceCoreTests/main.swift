@@ -217,6 +217,87 @@ assertTest(VerbosityLevel.normal < VerbosityLevel.verbose, "VerbosityLevel order
 assertTest(VerbosityLevel.verbose < VerbosityLevel.debug, "VerbosityLevel ordering verbose < debug")
 logger.level = .normal
 
+// Test 8: ServeRoute Flexible Targets & Backward Compatibility
+do {
+    // 8a: URL target
+    let urlRoute = ServeRoute(target: "http://localhost:3000/api", servePort: 443, proto: "https", path: "/api", proxyProtocol: 2)
+    assertTest(urlRoute.target == "http://localhost:3000/api", "ServeRoute URL target matches")
+    assertTest(urlRoute.localPort == 3000, "ServeRoute computed localPort parses 3000 from URL")
+    assertTest(urlRoute.proxyProtocol == 2, "ServeRoute proxyProtocol matches 2")
+
+    // 8b: Insecure HTTPS URL target
+    let insecureRoute = ServeRoute(target: "https+insecure://localhost:8443", servePort: 443, proto: "https")
+    assertTest(insecureRoute.target == "https+insecure://localhost:8443", "ServeRoute insecure HTTPS target matches")
+    assertTest(insecureRoute.localPort == 8443, "ServeRoute computed localPort parses 8443 from insecure HTTPS")
+
+    // 8c: Port string target
+    let portRoute = ServeRoute(target: "8080", servePort: 8080, proto: "http")
+    assertTest(portRoute.target == "8080", "ServeRoute port string target matches")
+    assertTest(portRoute.localPort == 8080, "ServeRoute computed localPort parses 8080")
+
+    // 8d: JSON Round-trip encoding & decoding
+    let encoder = JSONEncoder()
+    let decoder = JSONDecoder()
+    let data = try encoder.encode(urlRoute)
+    let decodedRoute = try decoder.decode(ServeRoute.self, from: data)
+    assertTest(decodedRoute.target == "http://localhost:3000/api", "Round-trip decoded target matches")
+    assertTest(decodedRoute.proxyProtocol == 2, "Round-trip decoded proxyProtocol matches")
+
+    // 8e: Legacy JSON decoding without target field
+    let legacyJSON = """
+    {
+        "id": "legacy-route-1",
+        "localPort": 9000,
+        "servePort": 443,
+        "proto": "https",
+        "path": "/legacy",
+        "enabled": true
+    }
+    """.data(using: .utf8)!
+    let decodedLegacy = try decoder.decode(ServeRoute.self, from: legacyJSON)
+    assertTest(decodedLegacy.target == "9000", "Legacy JSON decodes localPort into target")
+    assertTest(decodedLegacy.localPort == 9000, "Legacy JSON computed localPort matches 9000")
+} catch {
+    print("Test 8 error: \(error)")
+    failed += 1
+}
+
+// Test 9: Ephemeral CLI Sessions Lifecycle & Stale Cleanup
+do {
+    let uniqueID = UUID().uuidString
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("tail_test_\(uniqueID)")
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    setenv("TAIL_USERSPACE_DIR", tempDir.path, 1)
+
+    let manager = ConfigManager()
+    assertTest(manager.loadEphemeralSessions().isEmpty, "Initially no ephemeral sessions")
+
+    let currentPID = getpid()
+    let activeRoute = ServeRoute(target: "5000", servePort: 5000, proto: "http")
+    let activeSession = EphemeralServeSession(id: "sess-1", pid: currentPID, route: activeRoute, createdAt: Date())
+    try manager.saveEphemeralSession(activeSession)
+
+    let deadPID: Int32 = 9999999
+    let deadRoute = ServeRoute(target: "6000", servePort: 6000, proto: "http")
+    let deadSession = EphemeralServeSession(id: "sess-2", pid: deadPID, route: deadRoute, createdAt: Date())
+    try manager.saveEphemeralSession(deadSession)
+
+    assertTest(manager.loadEphemeralSessions().count == 2, "2 ephemeral sessions saved")
+
+    let alive = manager.cleanupStaleEphemeralSessions()
+    assertTest(alive.count == 1, "cleanupStaleEphemeralSessions pruned dead PID")
+    assertTest(alive.first?.pid == currentPID, "Active session with current PID remains alive")
+
+    try manager.removeEphemeralSession(id: "sess-1")
+    assertTest(manager.loadEphemeralSessions().isEmpty, "Removed active ephemeral session cleanly")
+
+    unsetenv("TAIL_USERSPACE_DIR")
+    try? FileManager.default.removeItem(at: tempDir)
+} catch {
+    print("Test 9 error: \(error)")
+    failed += 1
+}
+
 print("\n=== Test Results: \(passed) passed, \(failed) failed ===")
 if failed > 0 {
     exit(1)

@@ -303,23 +303,88 @@ public final class TailscaleClient {
 
     // MARK: - Tailscale Serve Management
 
-    /// Applies an Inbound Serve route: exposes a local port to the tailnet
-    public func applyServeRoute(_ route: ServeRoute) throws {
-        // e.g. tailscale serve --bg --https=443 3000
-        var args = ["serve", "--bg"]
+    /// Applies an Inbound Serve route: exposes a local port, URL, socket, or file to the tailnet
+    public func applyServeRoute(_ route: ServeRoute, background: Bool = true) throws {
+        var args = ["serve"]
+        if background {
+            args.append("--bg")
+        }
+
         if route.proto == "https" {
             args.append("--https=\(route.servePort)")
         } else if route.proto == "http" {
             args.append("--http=\(route.servePort)")
         } else if route.proto == "tcp" {
             args.append("--tcp=\(route.servePort)")
+        } else if route.proto == "tls-terminated-tcp" {
+            args.append("--tls-terminated-tcp=\(route.servePort)")
         }
-        if route.path != "/" && !route.path.isEmpty {
-            args.append("--set-path=\(route.path)")
+
+        if route.proto == "https" || route.proto == "http" {
+            let path = route.path.isEmpty ? "/" : route.path
+            if path != "/" {
+                args.append("--set-path=\(path)")
+            }
         }
-        args.append("\(route.localPort)")
+
+        if let pp = route.proxyProtocol, (1...2).contains(pp) {
+            args.append("--proxy-protocol=\(pp)")
+        }
+
+        args.append(route.target)
 
         try runCommand(args)
+    }
+
+    /// Turns off a specific serve route on the live daemon without resetting other routes
+    public func removeServeRouteLive(_ route: ServeRoute) throws {
+        var args = ["serve"]
+        if route.proto == "http" {
+            args.append("--http=\(route.servePort)")
+        } else if route.proto == "tcp" {
+            args.append("--tcp=\(route.servePort)")
+        } else if route.proto == "tls-terminated-tcp" {
+            args.append("--tls-terminated-tcp=\(route.servePort)")
+        } else {
+            args.append("--https=\(route.servePort)")
+        }
+
+        if route.proto == "https" || route.proto == "http" {
+            let path = route.path.isEmpty ? "/" : route.path
+            if path != "/" {
+                args.append("--set-path=\(path)")
+            }
+        }
+
+        args.append("off")
+        do {
+            _ = try runCommand(args)
+        } catch {
+            // Fallback: if specific path off failed, attempt with explicit set-path=/ if path was /
+            if (route.proto == "https" || route.proto == "http") && route.path == "/" {
+                var fallbackArgs = ["serve"]
+                fallbackArgs.append(route.proto == "http" ? "--http=\(route.servePort)" : "--https=\(route.servePort)")
+                fallbackArgs.append("--set-path=/")
+                fallbackArgs.append("off")
+                _ = try? runCommand(fallbackArgs)
+            }
+        }
+    }
+
+    /// Cleans up any ephemeral sessions whose CLI processes have terminated, unmounting them from the daemon
+    @discardableResult
+    public func cleanupStaleEphemeralSessionsAndUnmount() -> [EphemeralServeSession] {
+        let all = ConfigManager.shared.loadEphemeralSessions()
+        var alive: [EphemeralServeSession] = []
+        for s in all {
+            if kill(s.pid, 0) == 0 {
+                alive.append(s)
+            } else {
+                _ = try? removeServeRouteLive(s.route)
+                _ = try? ConfigManager.shared.removeEphemeralSession(id: s.id)
+            }
+        }
+        return alive
     }
 
     /// Resets all Tailscale Serve configurations on the node
@@ -329,7 +394,6 @@ public final class TailscaleClient {
 
     /// Reads and applies all enabled serve routes from the config
     public func reapplyConfiguredServeRoutes(_ config: TailUserspaceConfig) throws {
-        // Only reapply if online
         let status = getStatus()
         guard status.isOnline else { return }
 
@@ -338,8 +402,150 @@ public final class TailscaleClient {
         }
     }
 
-    /// Returns human-readable serve status
-    public func getServeStatus() -> String {
-        (try? runCommand(["serve", "status"])) ?? "No active serve endpoints"
+    /// Returns human-readable or JSON serve status from live daemon
+    public func getServeStatus(json: Bool = false) -> String {
+        let args = json ? ["serve", "status", "--json"] : ["serve", "status"]
+        return (try? runCommand(args)) ?? "No active serve endpoints"
+    }
+
+    /// Checks for discrepancies between persistent config and live daemon serve state
+    public func checkServeDiscrepancies(config: TailUserspaceConfig) -> [ServeDiscrepancy] {
+        var discrepancies: [ServeDiscrepancy] = []
+        let status = getStatus()
+        guard status.isOnline else {
+            for route in config.serveRoutes where route.enabled {
+                discrepancies.append(ServeDiscrepancy(
+                    kind: .notOnDaemon,
+                    route: route,
+                    message: "Daemon is currently offline"
+                ))
+            }
+            return discrepancies
+        }
+
+        var liveHandlers: [String: String] = [:]
+        var liveTCPPorts: [Int: String] = [:]
+
+        if let jsonStr = try? runCommand(["serve", "status", "--json"], timeout: 4.0),
+           let data = jsonStr.data(using: .utf8),
+           let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+
+            if let web = root["Web"] as? [String: [String: Any]] {
+                for (hostPort, webObj) in web {
+                    let portStr = hostPort.split(separator: ":").last.map(String.init) ?? "443"
+                    let servePort = Int(portStr) ?? 443
+                    if let handlers = webObj["Handlers"] as? [String: [String: Any]] {
+                        for (pathKey, handlerObj) in handlers {
+                            let proxyTarget = (handlerObj["Proxy"] as? String) ?? (handlerObj["Text"] as? String) ?? ""
+                            let key = "\(servePort):\(pathKey)"
+                            liveHandlers[key] = proxyTarget
+                        }
+                    }
+                }
+            }
+
+            if let tcp = root["TCP"] as? [String: [String: Any]] {
+                for (portStr, tcpObj) in tcp {
+                    if let port = Int(portStr) {
+                        let proto = (tcpObj["HTTPS"] as? Bool == true) ? "https" :
+                                    (tcpObj["HTTP"] as? Bool == true) ? "http" :
+                                    (tcpObj["TLS"] as? Bool == true) ? "tls-terminated-tcp" : "tcp"
+                        liveTCPPorts[port] = proto
+                    }
+                }
+            }
+        }
+
+        let activeEphemeral = cleanupStaleEphemeralSessionsAndUnmount()
+
+        // 1. Inspect configured routes
+        for route in config.serveRoutes {
+            if !route.enabled { continue }
+
+            let pathKey = "\(route.servePort):\(route.path)"
+            if route.proto == "https" || route.proto == "http" {
+                if let liveTarget = liveHandlers[pathKey] {
+                    let isMatch = targetsMatch(routeTarget: route.target, liveTarget: liveTarget)
+                    if isMatch {
+                        discrepancies.append(ServeDiscrepancy(
+                            kind: .inSync,
+                            route: route,
+                            liveTarget: liveTarget,
+                            message: "Route is active and in sync with live daemon."
+                        ))
+                    } else {
+                        discrepancies.append(ServeDiscrepancy(
+                            kind: .mismatch,
+                            route: route,
+                            liveTarget: liveTarget,
+                            message: "Target mismatch: config has '\(route.target)', live daemon has '\(liveTarget)'."
+                        ))
+                    }
+                } else {
+                    discrepancies.append(ServeDiscrepancy(
+                        kind: .notOnDaemon,
+                        route: route,
+                        liveTarget: nil,
+                        message: "Configured route '\(route.target)' on path '\(route.path)' is not running on live daemon."
+                    ))
+                }
+            } else {
+                if let _ = liveTCPPorts[route.servePort] {
+                    discrepancies.append(ServeDiscrepancy(
+                        kind: .inSync,
+                        route: route,
+                        liveTarget: "\(route.target) (TCP)",
+                        message: "TCP port \(route.servePort) forwarding is active on daemon."
+                    ))
+                } else {
+                    discrepancies.append(ServeDiscrepancy(
+                        kind: .notOnDaemon,
+                        route: route,
+                        message: "TCP port \(route.servePort) is not running on live daemon."
+                    ))
+                }
+            }
+        }
+
+        // 2. Check for live daemon handlers not in persistent config
+        for (key, liveTarget) in liveHandlers {
+            let parts = key.split(separator: ":", maxSplits: 1)
+            guard parts.count == 2, let servePort = Int(parts[0]) else { continue }
+            let path = String(parts[1])
+
+            let isConfigured = config.serveRoutes.contains {
+                $0.enabled && $0.servePort == servePort && $0.path == path
+            }
+            if !isConfigured {
+                if let eph = activeEphemeral.first(where: { $0.route.servePort == servePort && $0.route.path == path }) {
+                    discrepancies.append(ServeDiscrepancy(
+                        kind: .cliEphemeral,
+                        route: eph.route,
+                        liveTarget: liveTarget,
+                        message: "Ephemeral session active from terminal CLI (PID: \(eph.pid))."
+                    ))
+                } else {
+                    let unmanaged = ServeRoute(target: liveTarget, servePort: servePort, proto: "https", path: path)
+                    discrepancies.append(ServeDiscrepancy(
+                        kind: .daemonOnly,
+                        route: unmanaged,
+                        liveTarget: liveTarget,
+                        message: "Active on live daemon, but unmanaged in config.json."
+                    ))
+                }
+            }
+        }
+
+        return discrepancies
+    }
+
+    private func targetsMatch(routeTarget: String, liveTarget: String) -> Bool {
+        if routeTarget == liveTarget { return true }
+        if let p = Int(routeTarget) {
+            return liveTarget.contains(":\(p)")
+        }
+        let normRoute = routeTarget.replacingOccurrences(of: "localhost", with: "127.0.0.1")
+        let normLive = liveTarget.replacingOccurrences(of: "localhost", with: "127.0.0.1")
+        return normRoute == normLive || normLive.contains(normRoute) || normRoute.contains(normLive)
     }
 }

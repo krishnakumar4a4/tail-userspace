@@ -65,12 +65,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
         // Keep proxies active and synchronized with config changes
         forwarder.startConfiguredProxies(config)
 
-        let hasRoutes = !config.serveRoutes.isEmpty || !config.remoteProxies.isEmpty
-        updateStatusIcon(isOnline: status.isOnline, hasRoutes: hasRoutes)
+        let activeCLI = client.cleanupStaleEphemeralSessionsAndUnmount()
+        let hasRoutes = !config.serveRoutes.isEmpty || !config.remoteProxies.isEmpty || !activeCLI.isEmpty
+        updateStatusIcon(isOnline: status.isOnline, hasRoutes: hasRoutes, hasActiveCLI: !activeCLI.isEmpty)
         buildMenu()
     }
 
-    private func updateStatusIcon(isOnline: Bool, hasRoutes: Bool) {
+    private func updateStatusIcon(isOnline: Bool, hasRoutes: Bool, hasActiveCLI: Bool = false) {
         guard let button = statusItem.button else { return }
 
         let symbolName: String
@@ -87,6 +88,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
             button.image = image
         } else {
             button.title = isOnline ? "TS (Online)" : "TS (Offline)"
+        }
+
+        if hasActiveCLI {
+            button.title = " [CLI]"
+            button.imagePosition = .imageLeft
+        } else {
+            button.title = ""
         }
     }
 
@@ -229,23 +237,58 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
     private func buildServeSection(menu: NSMenu, config: TailUserspaceConfig) {
         menu.addItem(makeSectionHeader(title: "Inbound Serve (Local ➔ Tailnet)"))
 
-        if config.serveRoutes.isEmpty {
+        let discrepancies = client.checkServeDiscrepancies(config: config)
+        let activeEphemeral = client.cleanupStaleEphemeralSessionsAndUnmount()
+        let daemonOnlyDiscrepancies = discrepancies.filter { $0.kind == .daemonOnly }
+
+        let hasNoRoutes = config.serveRoutes.isEmpty && activeEphemeral.isEmpty && daemonOnlyDiscrepancies.isEmpty
+
+        if hasNoRoutes {
             let emptyItem = NSMenuItem(title: "  (No serve routes configured)", action: nil, keyEquivalent: "")
             emptyItem.isEnabled = false
             menu.addItem(emptyItem)
         } else {
             let host = currentStatus.selfDNSName.isEmpty ? "your-node.ts.net" : currentStatus.selfDNSName
+
+            // 1. Configured persistent routes
             for route in config.serveRoutes {
-                let dot = route.enabled ? "●" : "○"
+                let disc = discrepancies.first(where: { $0.route.id == route.id })
+                let isOffOnDaemon = disc?.kind == .notOnDaemon
+                let isMismatch = disc?.kind == .mismatch
+
+                let statusSymbol: String
+                let statusDesc: String
+                if isOffOnDaemon {
+                    statusSymbol = "⚠️"
+                    statusDesc = " (Not on daemon)"
+                } else if isMismatch {
+                    statusSymbol = "🔄"
+                    statusDesc = " (Target mismatch)"
+                } else {
+                    statusSymbol = route.enabled ? "●" : "○"
+                    statusDesc = route.enabled ? "" : " (Paused)"
+                }
+
                 let scheme = route.proto.lowercased()
-                let title = "  \(dot) localhost:\(route.localPort) ➔ \(scheme)://:\(route.servePort)\(route.path)"
+                let title = "  \(statusSymbol) \(route.target) ➔ \(scheme)://:\(route.servePort)\(route.path)\(statusDesc)"
 
                 let routeItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
                 let sub = NSMenu()
 
-                let header = NSMenuItem(title: "Serve: localhost:\(route.localPort)", action: nil, keyEquivalent: "")
+                let header = NSMenuItem(title: "Serve: \(route.target) (\(scheme)://:\(route.servePort)\(route.path))", action: nil, keyEquivalent: "")
                 header.isEnabled = false
                 sub.addItem(header)
+
+                if isOffOnDaemon && currentStatus.isOnline {
+                    let reapplyItem = makeMenuItem(
+                        title: "Reapply to Live Daemon",
+                        action: #selector(reapplySingleServeRouteClicked(_:)),
+                        systemImage: "arrow.clockwise"
+                    )
+                    reapplyItem.representedObject = route
+                    sub.addItem(reapplyItem)
+                    sub.addItem(NSMenuItem.separator())
+                }
 
                 let toggleTitle = route.enabled ? "Active (Click to Pause)" : "Paused (Click to Enable)"
                 let toggleItem = makeMenuItem(
@@ -276,12 +319,12 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
                 sub.addItem(copyTailnetItem)
 
                 let copyLocalItem = makeMenuItem(
-                    title: "Copy Local URL",
+                    title: "Copy Local Target",
                     action: #selector(copyServeRouteLocalURL(_:)),
                     systemImage: "doc.on.doc"
                 )
                 copyLocalItem.representedObject = route
-                copyLocalItem.toolTip = "http://localhost:\(route.localPort)"
+                copyLocalItem.toolTip = route.target
                 sub.addItem(copyLocalItem)
 
                 sub.addItem(NSMenuItem.separator())
@@ -305,6 +348,93 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
                 routeItem.submenu = sub
                 menu.addItem(routeItem)
             }
+
+            // 2. Active CLI ephemeral routes
+            for eph in activeEphemeral {
+                let scheme = eph.route.proto.lowercased()
+                let title = "  ⚡ [CLI] \(eph.route.target) ➔ \(scheme)://:\(eph.route.servePort)\(eph.route.path)"
+                let ephItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                ephItem.toolTip = "Ephemeral session started from terminal CLI (PID: \(eph.pid)). Unmounts automatically when CLI process terminates."
+
+                let sub = NSMenu()
+                let header = NSMenuItem(title: "Ephemeral CLI Route (PID: \(eph.pid))", action: nil, keyEquivalent: "")
+                header.isEnabled = false
+                sub.addItem(header)
+
+                let stopItem = makeMenuItem(
+                    title: "Stop CLI Session (Kill PID \(eph.pid))",
+                    action: #selector(stopCLISessionClicked(_:)),
+                    systemImage: "stop.circle"
+                )
+                stopItem.representedObject = eph
+                sub.addItem(stopItem)
+
+                sub.addItem(NSMenuItem.separator())
+
+                let openItem = makeMenuItem(
+                    title: "Open in Browser",
+                    action: #selector(openServeRouteInBrowser(_:)),
+                    systemImage: "arrow.up.right.square"
+                )
+                openItem.representedObject = eph.route
+                sub.addItem(openItem)
+
+                let copyTailnetItem = makeMenuItem(
+                    title: "Copy Tailnet URL",
+                    action: #selector(copyServeRouteURL(_:)),
+                    systemImage: "doc.on.doc"
+                )
+                copyTailnetItem.representedObject = eph.route
+                copyTailnetItem.toolTip = "\(scheme)://\(host):\(eph.route.servePort)\(eph.route.path)"
+                sub.addItem(copyTailnetItem)
+
+                ephItem.submenu = sub
+                menu.addItem(ephItem)
+            }
+
+            // 3. Unmanaged live daemon routes
+            for disc in daemonOnlyDiscrepancies {
+                let scheme = disc.route.proto.lowercased()
+                let liveTgt = disc.liveTarget ?? disc.route.target
+                let title = "  ℹ️ [Daemon] \(liveTgt) ➔ \(scheme)://:\(disc.route.servePort)\(disc.route.path)"
+                let daemonItem = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+                daemonItem.toolTip = "Active on live daemon, but not managed in config.json."
+
+                let sub = NSMenu()
+                let header = NSMenuItem(title: "Unmanaged Live Daemon Route", action: nil, keyEquivalent: "")
+                header.isEnabled = false
+                sub.addItem(header)
+
+                let saveItem = makeMenuItem(
+                    title: "Save to Config (Make Persistent)",
+                    action: #selector(saveDaemonRouteToConfigClicked(_:)),
+                    systemImage: "plus.square"
+                )
+                saveItem.representedObject = disc.route
+                sub.addItem(saveItem)
+
+                let offItem = makeMenuItem(
+                    title: "Turn Off on Daemon",
+                    action: #selector(turnOffDaemonRouteClicked(_:)),
+                    systemImage: "power"
+                )
+                offItem.representedObject = disc.route
+                sub.addItem(offItem)
+
+                daemonItem.submenu = sub
+                menu.addItem(daemonItem)
+            }
+
+            // If any discrepancies exist, provide a 1-click fix
+            let hasDiscrepancy = discrepancies.contains { $0.kind == .notOnDaemon || $0.kind == .mismatch }
+            if hasDiscrepancy && currentStatus.isOnline {
+                let reapplyAllItem = makeMenuItem(
+                    title: "  ⚠️ Reapply All Configured Routes to Daemon",
+                    action: #selector(reapplyServeRoutesClicked),
+                    systemImage: "arrow.triangle.2.circlepath"
+                )
+                menu.addItem(reapplyAllItem)
+            }
         }
 
         let addServeItem = makeMenuItem(
@@ -313,6 +443,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
             systemImage: "plus"
         )
         menu.addItem(addServeItem)
+
+        let resetServeItem = makeMenuItem(
+            title: "  Reset Serve Configuration...",
+            action: #selector(resetServeClicked),
+            systemImage: "arrow.counterclockwise"
+        )
+        menu.addItem(resetServeItem)
     }
 
     private func buildProxySection(menu: NSMenu, config: TailUserspaceConfig) {
@@ -595,8 +732,55 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
 
     // MARK: - Inbound Serve Route Actions
 
+    private func makeDescriptionCard(title: String, text: String, iconName: String = "lightbulb.fill") -> NSBox {
+        let box = NSBox()
+        box.boxType = .custom
+        box.cornerRadius = 8
+        box.borderWidth = 1
+        box.borderColor = NSColor.separatorColor
+        box.fillColor = NSColor.controlBackgroundColor.withAlphaComponent(0.6)
+
+        let contentStack = NSStackView()
+        contentStack.orientation = .horizontal
+        contentStack.alignment = .top
+        contentStack.spacing = 10
+        contentStack.edgeInsets = NSEdgeInsets(top: 8, left: 10, bottom: 8, right: 10)
+
+        let iconView = NSImageView()
+        if let img = NSImage(systemSymbolName: iconName, accessibilityDescription: title) {
+            iconView.image = img
+            iconView.contentTintColor = NSColor.systemOrange
+        }
+        iconView.setContentHuggingPriority(.required, for: .horizontal)
+
+        let textStack = NSStackView()
+        textStack.orientation = .vertical
+        textStack.alignment = .leading
+        textStack.spacing = 3
+
+        let titleLabel = NSTextField(labelWithString: title)
+        titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        titleLabel.textColor = NSColor.labelColor
+
+        let descLabel = NSTextField(wrappingLabelWithString: text)
+        descLabel.font = NSFont.systemFont(ofSize: 10.5, weight: .regular)
+        descLabel.textColor = NSColor.secondaryLabelColor
+
+        textStack.addArrangedSubview(titleLabel)
+        textStack.addArrangedSubview(descLabel)
+
+        contentStack.addArrangedSubview(iconView)
+        contentStack.addArrangedSubview(textStack)
+
+        box.contentView = contentStack
+        return box
+    }
+
     @objc private func toggleServeRouteClicked(_ sender: NSMenuItem) {
         guard let route = sender.representedObject as? ServeRoute else { return }
+        if route.enabled {
+            try? client.removeServeRouteLive(route)
+        }
         try? configManager.toggleServeRoute(id: route.id)
         let config = configManager.load(forceReload: true)
         if currentStatus.isOnline {
@@ -623,7 +807,47 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
 
     @objc private func copyServeRouteLocalURL(_ sender: NSMenuItem) {
         guard let route = sender.representedObject as? ServeRoute else { return }
-        copyToClipboard("http://localhost:\(route.localPort)")
+        let target = route.target.hasPrefix("http") ? route.target : "http://localhost:\(route.localPort)"
+        copyToClipboard(target)
+    }
+
+    @objc private func reapplySingleServeRouteClicked(_ sender: NSMenuItem) {
+        guard let route = sender.representedObject as? ServeRoute else { return }
+        try? client.applyServeRoute(route, background: true)
+        pollStatus(forceReloadConfig: true)
+    }
+
+    @objc private func reapplyServeRoutesClicked() {
+        let config = configManager.load(forceReload: true)
+        try? client.reapplyConfiguredServeRoutes(config)
+        pollStatus(forceReloadConfig: true)
+    }
+
+    @objc private func stopCLISessionClicked(_ sender: NSMenuItem) {
+        guard let session = sender.representedObject as? EphemeralServeSession else { return }
+        kill(session.pid, SIGINT)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.2) { [weak self] in
+            if kill(session.pid, 0) == 0 {
+                kill(session.pid, SIGTERM)
+            }
+            try? self?.client.removeServeRouteLive(session.route)
+            try? self?.configManager.removeEphemeralSession(id: session.id)
+            DispatchQueue.main.async {
+                self?.pollStatus(forceReloadConfig: true)
+            }
+        }
+    }
+
+    @objc private func saveDaemonRouteToConfigClicked(_ sender: NSMenuItem) {
+        guard let route = sender.representedObject as? ServeRoute else { return }
+        try? configManager.addServeRoute(route)
+        pollStatus(forceReloadConfig: true)
+    }
+
+    @objc private func turnOffDaemonRouteClicked(_ sender: NSMenuItem) {
+        guard let route = sender.representedObject as? ServeRoute else { return }
+        try? client.removeServeRouteLive(route)
+        pollStatus(forceReloadConfig: true)
     }
 
     @objc private func editServeRouteClicked(_ sender: NSMenuItem) {
@@ -631,81 +855,150 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
 
         let alert = NSAlert()
         alert.messageText = "Edit Inbound Serve Route"
-        alert.informativeText = "Modify route settings for localhost:\(route.localPort)."
+        alert.informativeText = "Modify endpoint settings for '\(route.target)' on your tailnet."
         alert.addButton(withTitle: "Save Changes")
         alert.addButton(withTitle: "Cancel")
 
-        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 320, height: 160))
+        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 440, height: 350))
         stack.orientation = .vertical
-        stack.spacing = 8
+        stack.alignment = .leading
+        stack.spacing = 10
 
-        let protoPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
-        protoPopup.addItems(withTitles: ["HTTPS (port 443)", "HTTP (port 80)", "HTTP (port 8080)", "Custom TCP"])
+        // 1. Target Service
+        let targetTitle = NSTextField(labelWithString: "Local Target Service (Port or URL):")
+        targetTitle.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+
+        let targetField = NSTextField(frame: NSRect(x: 0, y: 0, width: 440, height: 24))
+        targetField.placeholderString = "e.g. 3000, http://127.0.0.1:8787, or https+insecure://localhost:8443"
+        targetField.stringValue = route.target
+
+        let targetDesc = NSTextField(wrappingLabelWithString: "Port number, HTTP/HTTPS URL, or https+insecure:// for self-signed certificates.")
+        targetDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        targetDesc.textColor = NSColor.secondaryLabelColor
+
+        stack.addArrangedSubview(targetTitle)
+        stack.addArrangedSubview(targetField)
+        stack.addArrangedSubview(targetDesc)
+
+        // 2. Protocol & Port
+        let protoTitle = NSTextField(labelWithString: "Tailnet Protocol & Inbound Port:")
+        protoTitle.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+
+        let protoRow = NSStackView()
+        protoRow.orientation = .horizontal
+        protoRow.spacing = 10
+
+        let protoPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 26), pullsDown: false)
+        protoPopup.addItems(withTitles: [
+            "HTTPS (Port 443 - Recommended MagicDNS TLS)",
+            "HTTP (Port 80 - Plain Web)",
+            "HTTP Alternate (Port 8080)",
+            "TCP Passthrough (Raw Packets)",
+            "TLS-Terminated TCP"
+        ])
         if route.proto == "https" {
             protoPopup.selectItem(at: 0)
         } else if route.proto == "http" && route.servePort == 80 {
             protoPopup.selectItem(at: 1)
         } else if route.proto == "http" && route.servePort == 8080 {
             protoPopup.selectItem(at: 2)
-        } else {
+        } else if route.proto == "tcp" {
             protoPopup.selectItem(at: 3)
+        } else {
+            protoPopup.selectItem(at: 4)
         }
 
-        let localField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        localField.placeholderString = "Local Port (e.g. 3000)"
-        localField.stringValue = "\(route.localPort)"
+        let portField = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        portField.stringValue = "\(route.servePort)"
 
-        let serveField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        serveField.placeholderString = "Tailnet Serve Port"
-        serveField.stringValue = "\(route.servePort)"
+        protoRow.addArrangedSubview(protoPopup)
+        protoRow.addArrangedSubview(portField)
 
-        let pathField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        pathField.placeholderString = "Path Prefix (default: /)"
+        stack.addArrangedSubview(protoTitle)
+        stack.addArrangedSubview(protoRow)
+
+        // 3. Subpath Prefix
+        let pathTitle = NSTextField(labelWithString: "Tailnet Subpath Prefix (--set-path):")
+        pathTitle.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+
+        let pathField = NSTextField(frame: NSRect(x: 0, y: 0, width: 440, height: 24))
+        pathField.placeholderString = "/ (or /api, /app, /dashboard)"
         pathField.stringValue = route.path
 
+        let pathDesc = NSTextField(wrappingLabelWithString: "Mounts service under this path. Use / to serve at the root hostname.")
+        pathDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        pathDesc.textColor = NSColor.secondaryLabelColor
+
+        stack.addArrangedSubview(pathTitle)
+        stack.addArrangedSubview(pathField)
+        stack.addArrangedSubview(pathDesc)
+
+        // 4. Enabled Checkbox
         let enabledCheckbox = NSButton(checkboxWithTitle: "Route is active/enabled", target: nil, action: nil)
         enabledCheckbox.state = route.enabled ? .on : .off
-
-        stack.addArrangedSubview(protoPopup)
-        stack.addArrangedSubview(localField)
-        stack.addArrangedSubview(serveField)
-        stack.addArrangedSubview(pathField)
         stack.addArrangedSubview(enabledCheckbox)
+
+        // 5. Informative Bottom Card
+        let card = makeDescriptionCard(
+            title: "Modifying Tailscale Serve Route",
+            text: "Updating this configuration applies the new port, protocol, and subpath immediately to the live Tailscale daemon without disrupting other active routes.",
+            iconName: "pencil.circle.fill"
+        )
+        card.widthAnchor.constraint(equalToConstant: 440).isActive = true
+        stack.addArrangedSubview(card)
+
         alert.accessoryView = stack
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
-            guard let localPort = Int(localField.stringValue.trimmingCharacters(in: .whitespaces)), (1...65535).contains(localPort) else {
-                showErrorAlert(title: "Invalid Local Port", message: "Port must be a number between 1 and 65535.")
+            let rawTarget = targetField.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !rawTarget.isEmpty else {
+                showErrorAlert(title: "Target Required", message: "Please specify a local target port or URL.")
                 return
             }
-            guard let servePort = Int(serveField.stringValue.trimmingCharacters(in: .whitespaces)), (1...65535).contains(servePort) else {
+
+            var normalizedTarget = rawTarget
+            if normalizedTarget.hasPrefix("localhost:") || normalizedTarget.hasPrefix("127.0.0.1:") {
+                normalizedTarget = "http://" + normalizedTarget
+            }
+
+            guard let servePort = Int(portField.stringValue.trimmingCharacters(in: .whitespaces)), (1...65535).contains(servePort) else {
                 showErrorAlert(title: "Invalid Serve Port", message: "Port must be a number between 1 and 65535.")
                 return
             }
-            let proto: String
+
+            let selectedProto: String
             switch protoPopup.indexOfSelectedItem {
-            case 0: proto = "https"
-            case 1, 2: proto = "http"
-            default: proto = "tcp"
+            case 1: selectedProto = "http"
+            case 2: selectedProto = "http"
+            case 3: selectedProto = "tcp"
+            case 4: selectedProto = "tls-terminated-tcp"
+            default: selectedProto = "https"
             }
+
             var path = pathField.stringValue.trimmingCharacters(in: .whitespaces)
             if path.isEmpty { path = "/" }
             if !path.hasPrefix("/") { path = "/" + path }
 
+            // If port, proto, or path changed, unmount old route
+            if route.servePort != servePort || route.proto != selectedProto || route.path != path {
+                try? client.removeServeRouteLive(route)
+            }
+
             let updated = ServeRoute(
                 id: route.id,
-                localPort: localPort,
+                target: normalizedTarget,
                 servePort: servePort,
-                proto: proto,
+                proto: selectedProto,
                 path: path,
-                enabled: enabledCheckbox.state == .on
+                enabled: enabledCheckbox.state == .on,
+                proxyProtocol: route.proxyProtocol
             )
 
             do {
                 try configManager.updateServeRoute(id: route.id, updatedRoute: updated)
-                if currentStatus.isOnline {
-                    try? client.reapplyConfiguredServeRoutes(configManager.load(forceReload: true))
+                if currentStatus.isOnline && updated.enabled {
+                    try? client.applyServeRoute(updated, background: true)
                 }
                 pollStatus(forceReloadConfig: true)
             } catch {
@@ -720,17 +1013,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "Delete Inbound Serve Route?"
-        alert.informativeText = "Are you sure you want to delete the serve route for localhost:\(route.localPort) (➔ \(route.proto)://:\(route.servePort)\(route.path))?"
-        alert.addButton(withTitle: "Delete")
+        alert.informativeText = "Are you sure you want to delete the serve route for '\(route.target)' (➔ \(route.proto)://:\(route.servePort)\(route.path))?\n\nThis will unmount the route from the live Tailscale daemon immediately."
+        alert.addButton(withTitle: "Delete Route")
         alert.addButton(withTitle: "Cancel")
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
+            try? client.removeServeRouteLive(route)
             try? configManager.removeServeRoute(id: route.id)
-            if currentStatus.isOnline {
-                try? client.resetServe()
-                try? client.reapplyConfiguredServeRoutes(configManager.load(forceReload: true))
-            }
             pollStatus(forceReloadConfig: true)
         }
     }
@@ -738,56 +1028,139 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
     @objc private func promptAddServeRoute() {
         let alert = NSAlert()
         alert.messageText = "Add Inbound Tailscale Serve Route"
-        alert.informativeText = "Expose a local service (e.g. 8787 or 3000) to your tailnet via HTTPS or HTTP."
+        alert.informativeText = "Expose a local web app or TCP service securely to devices on your tailnet."
         alert.addButton(withTitle: "Add Route")
         alert.addButton(withTitle: "Cancel")
 
-        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 320, height: 95))
+        let stack = NSStackView(frame: NSRect(x: 0, y: 0, width: 440, height: 350))
         stack.orientation = .vertical
-        stack.spacing = 8
+        stack.alignment = .leading
+        stack.spacing = 10
 
-        let protoPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
-        protoPopup.addItems(withTitles: ["HTTPS (port 443)", "HTTP (port 80)", "HTTP (port 8080)"])
+        // 1. Target Service
+        let targetTitle = NSTextField(labelWithString: "Local Target Service (Port or URL):")
+        targetTitle.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
 
-        let localField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        localField.placeholderString = "Local Port (e.g. 8787 or 3000)"
+        let targetField = NSTextField(frame: NSRect(x: 0, y: 0, width: 440, height: 24))
+        targetField.placeholderString = "e.g. 3000, http://127.0.0.1:8787, or https+insecure://localhost:8443"
 
-        let serveField = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-        serveField.placeholderString = "Tailnet Serve Port (default: 443)"
-        serveField.stringValue = "443"
+        let targetDesc = NSTextField(wrappingLabelWithString: "Enter a local port (e.g. 3000), HTTP URL, or https+insecure:// for self-signed backends.")
+        targetDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        targetDesc.textColor = NSColor.secondaryLabelColor
 
-        stack.addArrangedSubview(protoPopup)
-        stack.addArrangedSubview(localField)
-        stack.addArrangedSubview(serveField)
+        stack.addArrangedSubview(targetTitle)
+        stack.addArrangedSubview(targetField)
+        stack.addArrangedSubview(targetDesc)
+
+        // 2. Protocol & Port
+        let protoTitle = NSTextField(labelWithString: "Tailnet Protocol & Inbound Port:")
+        protoTitle.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+
+        let protoRow = NSStackView()
+        protoRow.orientation = .horizontal
+        protoRow.spacing = 10
+
+        let protoPopup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 300, height: 26), pullsDown: false)
+        protoPopup.addItems(withTitles: [
+            "HTTPS (Port 443 - Recommended MagicDNS TLS)",
+            "HTTP (Port 80 - Plain Web)",
+            "HTTP Alternate (Port 8080)",
+            "TCP Passthrough (Raw Packets)",
+            "TLS-Terminated TCP"
+        ])
+
+        let portField = NSTextField(frame: NSRect(x: 0, y: 0, width: 120, height: 24))
+        portField.stringValue = "443"
+        portField.placeholderString = "Port (443)"
+
+        protoRow.addArrangedSubview(protoPopup)
+        protoRow.addArrangedSubview(portField)
+
+        stack.addArrangedSubview(protoTitle)
+        stack.addArrangedSubview(protoRow)
+
+        // 3. Subpath Prefix
+        let pathTitle = NSTextField(labelWithString: "Tailnet Subpath Prefix (--set-path):")
+        pathTitle.font = NSFont.systemFont(ofSize: 11.5, weight: .semibold)
+
+        let pathField = NSTextField(frame: NSRect(x: 0, y: 0, width: 440, height: 24))
+        pathField.stringValue = "/"
+        pathField.placeholderString = "/ (or /api, /app, /dashboard)"
+
+        let pathDesc = NSTextField(wrappingLabelWithString: "Allows mounting multiple web services on the same domain under different path prefixes.")
+        pathDesc.font = NSFont.systemFont(ofSize: 10, weight: .regular)
+        pathDesc.textColor = NSColor.secondaryLabelColor
+
+        stack.addArrangedSubview(pathTitle)
+        stack.addArrangedSubview(pathField)
+        stack.addArrangedSubview(pathDesc)
+
+        // 4. Persistence Mode
+        let bgCheckbox = NSButton(checkboxWithTitle: "Save permanently to config.json (runs in background)", target: nil, action: nil)
+        bgCheckbox.state = .on
+        stack.addArrangedSubview(bgCheckbox)
+
+        // 5. Informative Bottom Card
+        let card = makeDescriptionCard(
+            title: "Tailscale Serve Architecture",
+            text: "Exposes local services to devices on your tailnet with automatic LetsEncrypt TLS certificates provided by MagicDNS. Traffic is encrypted end-to-end and only accessible to authorized devices on your tailnet.",
+            iconName: "shield.lefthalf.filled"
+        )
+        card.widthAnchor.constraint(equalToConstant: 440).isActive = true
+        stack.addArrangedSubview(card)
+
         alert.accessoryView = stack
 
         NSApp.activate(ignoringOtherApps: true)
         if alert.runModal() == .alertFirstButtonReturn {
-            if let localPort = Int(localField.stringValue.trimmingCharacters(in: .whitespaces)), (1...65535).contains(localPort) {
-                let selectedProto: String
-                let defaultPort: Int
-                switch protoPopup.indexOfSelectedItem {
-                case 1:
-                    selectedProto = "http"
-                    defaultPort = 80
-                case 2:
-                    selectedProto = "http"
-                    defaultPort = 8080
-                default:
-                    selectedProto = "https"
-                    defaultPort = 443
-                }
-
-                let servePort = Int(serveField.stringValue.trimmingCharacters(in: .whitespaces)) ?? defaultPort
-                let route = ServeRoute(localPort: localPort, servePort: servePort, proto: selectedProto)
-                try? configManager.addServeRoute(route)
-                if currentStatus.isOnline {
-                    try? client.applyServeRoute(route)
-                }
-                pollStatus(forceReloadConfig: true)
-            } else {
-                showErrorAlert(title: "Invalid Local Port", message: "Please enter a valid local port number between 1 and 65535.")
+            let rawTarget = targetField.stringValue.trimmingCharacters(in: .whitespaces)
+            guard !rawTarget.isEmpty else {
+                showErrorAlert(title: "Target Required", message: "Please specify a local port or URL.")
+                return
             }
+
+            var normalizedTarget = rawTarget
+            if normalizedTarget.hasPrefix("localhost:") || normalizedTarget.hasPrefix("127.0.0.1:") {
+                normalizedTarget = "http://" + normalizedTarget
+            }
+
+            var servePort = Int(portField.stringValue.trimmingCharacters(in: .whitespaces)) ?? 443
+            let selectedProto: String
+            switch protoPopup.indexOfSelectedItem {
+            case 1:
+                selectedProto = "http"
+                if servePort == 443 { servePort = 80 }
+            case 2:
+                selectedProto = "http"
+                if servePort == 443 { servePort = 8080 }
+            case 3:
+                selectedProto = "tcp"
+            case 4:
+                selectedProto = "tls-terminated-tcp"
+            default:
+                selectedProto = "https"
+            }
+
+            var path = pathField.stringValue.trimmingCharacters(in: .whitespaces)
+            if path.isEmpty { path = "/" }
+            if !path.hasPrefix("/") { path = "/" + path }
+
+            let route = ServeRoute(
+                target: normalizedTarget,
+                servePort: servePort,
+                proto: selectedProto,
+                path: path,
+                enabled: true
+            )
+
+            let isBg = bgCheckbox.state == .on
+            if isBg {
+                try? configManager.addServeRoute(route)
+            }
+            if currentStatus.isOnline {
+                try? client.applyServeRoute(route, background: true)
+            }
+            pollStatus(forceReloadConfig: true)
         }
     }
 

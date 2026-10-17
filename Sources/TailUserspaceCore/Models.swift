@@ -46,6 +46,14 @@ public struct PathConstants {
         baseDirectory.appendingPathComponent("tailscaled.pid").path
     }
 
+    public static var ephemeralSessionsPath: String {
+        baseDirectory.appendingPathComponent("ephemeral_sessions.json").path
+    }
+
+    public static var ephemeralSessionsURL: URL {
+        baseDirectory.appendingPathComponent("ephemeral_sessions.json")
+    }
+
     /// Ensures runtime storage and log directories exist
     public static func ensureDirectoriesExist() throws {
         try FileManager.default.createDirectory(at: baseDirectory, withIntermediateDirectories: true)
@@ -53,22 +61,148 @@ public struct PathConstants {
     }
 }
 
-/// Inbound Tailscale Serve Route (Local Port -> Tailnet HTTPS)
+/// Inbound Tailscale Serve Route (Local Port/URL/Socket -> Tailnet)
 public struct ServeRoute: Codable, Identifiable, Equatable {
     public var id: String
-    public var localPort: Int
+    public var target: String
     public var servePort: Int
     public var proto: String
     public var path: String
     public var enabled: Bool
+    public var proxyProtocol: Int?
+    public var isEphemeral: Bool
+    public var ephemeralPID: Int32?
 
-    public init(id: String = UUID().uuidString, localPort: Int, servePort: Int = 443, proto: String = "https", path: String = "/", enabled: Bool = true) {
+    /// Backward-compatible localPort computed property
+    public var localPort: Int {
+        if let p = Int(target) { return p }
+        if let url = URL(string: target), let p = url.port { return p }
+        let parts = target.split(separator: ":")
+        if parts.count >= 2, let p = Int(parts.last?.split(separator: "/").first ?? "") {
+            return p
+        }
+        return 0
+    }
+
+    public init(
+        id: String = UUID().uuidString,
+        target: String,
+        servePort: Int = 443,
+        proto: String = "https",
+        path: String = "/",
+        enabled: Bool = true,
+        proxyProtocol: Int? = nil,
+        isEphemeral: Bool = false,
+        ephemeralPID: Int32? = nil
+    ) {
         self.id = id
-        self.localPort = localPort
+        self.target = target
         self.servePort = servePort
         self.proto = proto
-        self.path = path
+        self.path = path.hasPrefix("/") ? path : "/\(path)"
         self.enabled = enabled
+        self.proxyProtocol = proxyProtocol
+        self.isEphemeral = isEphemeral
+        self.ephemeralPID = ephemeralPID
+    }
+
+    /// Convenience initializer preserving legacy (localPort: Int) call sites
+    public init(
+        id: String = UUID().uuidString,
+        localPort: Int,
+        servePort: Int = 443,
+        proto: String = "https",
+        path: String = "/",
+        enabled: Bool = true,
+        proxyProtocol: Int? = nil,
+        isEphemeral: Bool = false,
+        ephemeralPID: Int32? = nil
+    ) {
+        self.id = id
+        self.target = "\(localPort)"
+        self.servePort = servePort
+        self.proto = proto
+        self.path = path.hasPrefix("/") ? path : "/\(path)"
+        self.enabled = enabled
+        self.proxyProtocol = proxyProtocol
+        self.isEphemeral = isEphemeral
+        self.ephemeralPID = ephemeralPID
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, target, localPort, servePort, proto, path, enabled, proxyProtocol, isEphemeral, ephemeralPID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        if let rawTarget = try container.decodeIfPresent(String.self, forKey: .target) {
+            self.target = rawTarget
+        } else if let legacyPort = try container.decodeIfPresent(Int.self, forKey: .localPort) {
+            self.target = "\(legacyPort)"
+        } else {
+            self.target = "0"
+        }
+        self.servePort = try container.decodeIfPresent(Int.self, forKey: .servePort) ?? 443
+        self.proto = try container.decodeIfPresent(String.self, forKey: .proto) ?? "https"
+        let rawPath = try container.decodeIfPresent(String.self, forKey: .path) ?? "/"
+        self.path = rawPath.hasPrefix("/") ? rawPath : "/\(rawPath)"
+        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        self.proxyProtocol = try container.decodeIfPresent(Int.self, forKey: .proxyProtocol)
+        self.isEphemeral = try container.decodeIfPresent(Bool.self, forKey: .isEphemeral) ?? false
+        self.ephemeralPID = try container.decodeIfPresent(Int32.self, forKey: .ephemeralPID)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(target, forKey: .target)
+        try container.encode(localPort, forKey: .localPort)
+        try container.encode(servePort, forKey: .servePort)
+        try container.encode(proto, forKey: .proto)
+        try container.encode(path, forKey: .path)
+        try container.encode(enabled, forKey: .enabled)
+        try container.encodeIfPresent(proxyProtocol, forKey: .proxyProtocol)
+        try container.encode(isEphemeral, forKey: .isEphemeral)
+        try container.encodeIfPresent(ephemeralPID, forKey: .ephemeralPID)
+    }
+}
+
+/// An ephemeral serve session managed by a foreground CLI process
+public struct EphemeralServeSession: Codable, Identifiable, Equatable {
+    public var id: String
+    public var pid: Int32
+    public var route: ServeRoute
+    public var createdAt: Date
+
+    public init(id: String = UUID().uuidString, pid: Int32, route: ServeRoute, createdAt: Date = Date()) {
+        self.id = id
+        self.pid = pid
+        self.route = route
+        self.createdAt = createdAt
+    }
+}
+
+/// Discrepancy between persistent configuration and live daemon serve state
+public enum DiscrepancyKind: String, Codable {
+    case inSync = "In Sync"
+    case notOnDaemon = "In Config, Not Active on Daemon"
+    case daemonOnly = "Active on Daemon, Not in Config"
+    case cliEphemeral = "CLI Ephemeral Session"
+    case mismatch = "Configuration Mismatch"
+}
+
+public struct ServeDiscrepancy: Equatable {
+    public var kind: DiscrepancyKind
+    public var route: ServeRoute
+    public var liveTarget: String?
+    public var message: String
+
+    public init(kind: DiscrepancyKind, route: ServeRoute, liveTarget: String? = nil, message: String) {
+        self.kind = kind
+        self.route = route
+        self.liveTarget = liveTarget
+        self.message = message
     }
 }
 

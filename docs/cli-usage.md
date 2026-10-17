@@ -94,38 +94,68 @@ tail -f $(tail-userspace logs)
 
 ## 3. Inbound Serve Management (`tail-userspace serve`)
 
-Expose local web services to your tailnet via HTTPS (with automatic Let's Encrypt certificates):
+Expose local web services or TCP listeners to your tailnet with automatic Let's Encrypt certificates from MagicDNS:
 
-### `tail-userspace serve add <localPort> [--serve-port <port>] [--proto <http|https|tcp>]`
-Adds an inbound serve route. Automatically applied immediately if online, or queued for when the daemon starts.
-
+### Syntax
 ```bash
-# Expose local port 3000 to tailnet via HTTPS on port 443 (default)
-tail-userspace serve add 3000
+# Foreground attached mode (unmounts automatically when stopped or Ctrl+C is pressed):
+tail-userspace serve [flags] <target>
 
-# Expose local port 8080 via plain HTTP on port 80
-tail-userspace serve add 8080 --serve-port 80 --proto http
-```
+# Background persistent mode (saved to config.json and runs indefinitely):
+tail-userspace serve [add] --bg [flags] <target>
 
-### `tail-userspace serve list`
-Lists all configured inbound serve routes:
+# Inspect live daemon serve state & discrepancies:
+tail-userspace serve status [--json]
 
-```bash
-tail-userspace serve list
-```
+# Synchronize config.json routes to live daemon:
+tail-userspace serve reapply
 
-### `tail-userspace serve remove <localPort>`
-Removes an existing serve route for a given local port:
+# Live unmount individual route or handler:
+tail-userspace serve remove <target|port> [--set-path=<path>]
+tail-userspace serve off [flags]
 
-```bash
-tail-userspace serve remove 3000
-```
-
-### `tail-userspace serve reset`
-Resets all active Tailscale Serve endpoints on the live daemon:
-
-```bash
+# Reset all active endpoints:
 tail-userspace serve reset
+```
+
+### Supported Targets
+* **Port number**: `3000`, `8080`, `5432`
+* **Full HTTP/HTTPS URL**: `http://localhost:3000/api`, `http://127.0.0.1:8787`
+* **Self-signed HTTPS backend**: `https+insecure://localhost:8443` (accepts invalid/self-signed upstream certificates)
+
+### Supported Flags
+* `--https=<port>`: Expose an HTTPS endpoint on your tailnet (default port: `443`).
+* `--http=<port>`: Expose a plain HTTP endpoint on your tailnet (default port: `80`).
+* `--tcp=<port>`: Expose raw Layer 4 TCP port forwarding.
+* `--tls-terminated-tcp=<port>`: Terminate TLS and forward decrypted TCP packets upstream.
+* `--set-path=<path>`: Route a specific subpath (e.g. `/api`, `/app`) to the target.
+* `--proxy-protocol=<1|2>`: Send PROXY protocol v1 or v2 headers to upstream TCP services.
+* `--bg`, `--background`: Persist route to `config.json` and keep running in the background.
+
+### Examples
+
+```bash
+# 1. Foreground attached mode (displays [CLI] tag in Menu Bar App, unmounts on Ctrl+C):
+tail-userspace serve 3000
+
+# 2. Expose in background with path prefix routing:
+tail-userspace serve --bg --https=443 --set-path=/api 3000
+
+# 3. Expose self-signed HTTPS development server:
+tail-userspace serve --bg https+insecure://localhost:8443
+
+# 4. Expose raw TCP service (e.g. PostgreSQL):
+tail-userspace serve --bg --tcp=5432 5432
+
+# 5. Live unmount a specific subpath handler without resetting other routes:
+tail-userspace serve --https=443 --set-path=/api off
+
+# 6. Check live serve status and discrepancies with config:
+tail-userspace serve status
+tail-userspace serve status --json
+
+# 7. Reapply all configured persistent routes to daemon:
+tail-userspace serve reapply
 ```
 
 ---

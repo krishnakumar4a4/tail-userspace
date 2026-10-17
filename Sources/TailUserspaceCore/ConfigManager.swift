@@ -56,8 +56,11 @@ public final class ConfigManager {
 
     public func addServeRoute(_ route: ServeRoute) throws {
         var config = load()
-        // Replace existing route for same local port if present
-        config.serveRoutes.removeAll { $0.localPort == route.localPort || $0.id == route.id }
+        // Replace existing route for same endpoint (servePort + proto + path) or same id
+        config.serveRoutes.removeAll {
+            $0.id == route.id ||
+            ($0.servePort == route.servePort && $0.proto == route.proto && $0.path == route.path)
+        }
         config.serveRoutes.append(route)
         try save(config)
     }
@@ -65,8 +68,13 @@ public final class ConfigManager {
     public func updateServeRoute(id: String, updatedRoute: ServeRoute) throws {
         var config = load()
         if config.serveRoutes.contains(where: { $0.id == id }) {
-            // Remove any other route that might conflict with the new localPort
-            config.serveRoutes.removeAll { $0.id != id && $0.localPort == updatedRoute.localPort }
+            // Remove any other route that might conflict with the updated servePort + proto + path
+            config.serveRoutes.removeAll {
+                $0.id != id &&
+                $0.servePort == updatedRoute.servePort &&
+                $0.proto == updatedRoute.proto &&
+                $0.path == updatedRoute.path
+            }
             if let newIdx = config.serveRoutes.firstIndex(where: { $0.id == id }) {
                 config.serveRoutes[newIdx] = updatedRoute
             } else {
@@ -88,6 +96,74 @@ public final class ConfigManager {
             config.serveRoutes[idx].enabled.toggle()
             try save(config)
         }
+    }
+
+    // MARK: - Ephemeral CLI Serve Sessions
+
+    public func loadEphemeralSessions() -> [EphemeralServeSession] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let path = PathConstants.ephemeralSessionsPath
+        guard FileManager.default.fileExists(atPath: path),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let sessions = try? JSONDecoder().decode([EphemeralServeSession].self, from: data) else {
+            return []
+        }
+        return sessions
+    }
+
+    public func saveEphemeralSession(_ session: EphemeralServeSession) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var sessions = loadEphemeralSessionsLocked()
+        sessions.removeAll { $0.id == session.id || $0.pid == session.pid }
+        sessions.append(session)
+        try writeEphemeralSessionsLocked(sessions)
+    }
+
+    public func removeEphemeralSession(id: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var sessions = loadEphemeralSessionsLocked()
+        sessions.removeAll { $0.id == id }
+        try writeEphemeralSessionsLocked(sessions)
+    }
+
+    public func cleanupStaleEphemeralSessions() -> [EphemeralServeSession] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        let active = loadEphemeralSessionsLocked()
+        let alive = active.filter { session in
+            // Check if process is still running
+            kill(session.pid, 0) == 0
+        }
+
+        if alive.count != active.count {
+            try? writeEphemeralSessionsLocked(alive)
+        }
+        return alive
+    }
+
+    private func loadEphemeralSessionsLocked() -> [EphemeralServeSession] {
+        let path = PathConstants.ephemeralSessionsPath
+        guard FileManager.default.fileExists(atPath: path),
+              let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let sessions = try? JSONDecoder().decode([EphemeralServeSession].self, from: data) else {
+            return []
+        }
+        return sessions
+    }
+
+    private func writeEphemeralSessionsLocked(_ sessions: [EphemeralServeSession]) throws {
+        try PathConstants.ensureDirectoriesExist()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(sessions)
+        try data.write(to: PathConstants.ephemeralSessionsURL, options: .atomic)
     }
 
     // MARK: - Outbound Remote Proxy Mutation

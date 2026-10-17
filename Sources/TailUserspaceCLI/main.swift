@@ -17,13 +17,32 @@ func printUsage() {
       env                Print shell export commands for SOCKS5 and HTTP proxy
       logs               Print path to tailscaled log file
       
-    SERVE COMMANDS (Local Port -> Tailnet HTTPS):
-      serve list         List all configured Inbound Tailscale Serve routes
-      serve add <localPort> [--serve-port <port>] [--proto <https|http|tcp>]
-                         Expose a local port to the tailnet via Tailscale Serve
-      serve remove <localPort>
-                         Remove a configured Tailscale Serve route
+    SERVE COMMANDS (Local Port / URL -> Tailnet HTTPS / TCP):
+      serve <target> [flags]
+                         Expose a local service to your tailnet (foreground attached mode)
+      serve add <target> [flags]
+                         Add and configure a serve route (supports --bg for background)
+      serve remove <target|port> [--set-path=<path>]
+                         Remove a configured serve route and unmount it from daemon
+      serve off [flags]  Turn off a specific serve handler or port on the daemon
+      serve status [--json]
+                         View live serve configuration and discrepancy report
+      serve list         List all configured persistent serve routes
       serve reset        Reset all active Tailscale Serve routes
+      serve reapply      Reapply and synchronize configured routes to the live daemon
+
+    SERVE TARGETS & FLAGS:
+      <target>           Port (3000), URL (http://localhost:3000/api), or
+                         insecure HTTPS (https+insecure://localhost:8443)
+      --https=<port>     Expose HTTPS endpoint at port (default: 443)
+      --http=<port>      Expose plain HTTP endpoint at port (default: 80)
+      --tcp=<port>       Expose raw TCP forwarder at port
+      --tls-terminated-tcp=<port>
+                         Expose TLS-terminated TCP forwarder at port
+      --set-path=<path>  Mount handler under a subpath (e.g. /api or /)
+      --proxy-protocol=<1|2>
+                         Send PROXY protocol header (v1 or v2) to upstream
+      --bg               Run in background and save permanently to config.json
       
     PROXY COMMANDS (Tailnet Route -> Localhost Port):
       proxy list         List all configured Outbound Remote Proxies
@@ -133,13 +152,63 @@ func main() {
         print("  HTTP Proxy:      127.0.0.1:\(config.httpProxyPort)")
 
         print("\n--- Inbound Serve Routes (Local -> Tailnet) ---")
-        if config.serveRoutes.isEmpty {
+        let targetHost = status.selfDNSName.isEmpty ? "your-node.ts.net" : status.selfDNSName
+        let discrepancies = client.checkServeDiscrepancies(config: config)
+        let activeEphemeral = client.cleanupStaleEphemeralSessionsAndUnmount()
+
+        let daemonOnlyDiscrepancies = discrepancies.filter { $0.kind == .daemonOnly }
+        let hasNoRoutes = config.serveRoutes.isEmpty && daemonOnlyDiscrepancies.isEmpty && activeEphemeral.isEmpty
+
+        if hasNoRoutes {
             print("  (None configured)")
         } else {
             for route in config.serveRoutes {
-                let state = route.enabled ? "✓ Enabled" : "○ Disabled"
-                let targetURL = status.selfDNSName.isEmpty ? "your-node.ts.net" : status.selfDNSName
-                print("  [\(state)] localhost:\(route.localPort) ➔ https://\(targetURL):\(route.servePort)\(route.path)")
+                let badge: String
+                let note: String
+                if let disc = discrepancies.first(where: { $0.route.id == route.id }) {
+                    switch disc.kind {
+                    case .inSync:
+                        badge = "[✓ In Sync]"
+                        note = ""
+                    case .notOnDaemon:
+                        badge = "[⚠️ Not on Daemon]"
+                        note = " (Offline/Missing on live daemon)"
+                    case .mismatch:
+                        badge = "[🔄 Target Mismatch]"
+                        note = " (Live daemon points to: \(disc.liveTarget ?? ""))"
+                    case .daemonOnly, .cliEphemeral:
+                        badge = "[ℹ️ Live Route]"
+                        note = ""
+                    }
+                } else {
+                    badge = route.enabled ? "[✓ Active]" : "[○ Disabled]"
+                    note = ""
+                }
+
+                let protoPrefix = route.proto == "https" ? "https" : route.proto == "http" ? "http" : "tcp"
+                let paddedBadge = badge.padding(toLength: 20, withPad: " ", startingAt: 0)
+                print("  \(paddedBadge) \(route.target) ➔ \(protoPrefix)://\(targetHost):\(route.servePort)\(route.path)\(note)")
+            }
+
+            // Print any ephemeral CLI routes
+            for eph in activeEphemeral {
+                let protoPrefix = eph.route.proto == "https" ? "https" : eph.route.proto == "http" ? "http" : "tcp"
+                let paddedBadge = "[⚡ CLI Ephemeral]".padding(toLength: 20, withPad: " ", startingAt: 0)
+                print("  \(paddedBadge) \(eph.route.target) ➔ \(protoPrefix)://\(targetHost):\(eph.route.servePort)\(eph.route.path) (PID: \(eph.pid))")
+            }
+
+            // Print unmanaged daemon-only routes
+            for disc in daemonOnlyDiscrepancies {
+                let protoPrefix = disc.route.proto == "https" ? "https" : disc.route.proto == "http" ? "http" : "tcp"
+                let liveTgt = disc.liveTarget ?? disc.route.target
+                let paddedBadge = "[ℹ️ Daemon Only]".padding(toLength: 20, withPad: " ", startingAt: 0)
+                print("  \(paddedBadge) \(liveTgt) ➔ \(protoPrefix)://\(targetHost):\(disc.route.servePort)\(disc.route.path) (Unmanaged)")
+            }
+
+            let hasErrors = discrepancies.contains { $0.kind == .notOnDaemon || $0.kind == .mismatch }
+            if hasErrors && status.isOnline {
+                print("\n  ⚠️  Discrepancy detected between config.json and live daemon.")
+                print("      Run 'tail-userspace serve reapply' to synchronize configured routes to the live daemon.")
             }
         }
 
@@ -241,69 +310,360 @@ func main() {
     }
 }
 
+struct ParsedServeOptions {
+    var target: String?
+    var servePort: Int = 443
+    var proto: String = "https"
+    var path: String = "/"
+    var proxyProtocol: Int? = nil
+    var isBackground: Bool = false
+    var isOff: Bool = false
+    var isReset: Bool = false
+    var isReapply: Bool = false
+    var isStatus: Bool = false
+    var isList: Bool = false
+    var isJson: Bool = false
+}
+
+func parseServeArgs(_ args: [String]) -> ParsedServeOptions {
+    var opts = ParsedServeOptions()
+    var i = 0
+    var positional: [String] = []
+
+    while i < args.count {
+        let arg = args[i]
+
+        if arg == "status" {
+            opts.isStatus = true
+        } else if arg == "reset" {
+            opts.isReset = true
+        } else if arg == "reapply" {
+            opts.isReapply = true
+        } else if arg == "list" {
+            opts.isList = true
+        } else if arg == "off" {
+            opts.isOff = true
+        } else if arg == "--json" {
+            opts.isJson = true
+        } else if arg == "--bg" || arg == "--background" {
+            opts.isBackground = true
+        } else if arg.hasPrefix("--https") {
+            opts.proto = "https"
+            if arg.contains("=") {
+                let parts = arg.split(separator: "=", maxSplits: 1)
+                if parts.count == 2, let p = Int(parts[1]) {
+                    opts.servePort = p
+                }
+            } else if i + 1 < args.count, let p = Int(args[i + 1]) {
+                opts.servePort = p
+                i += 1
+            } else {
+                opts.servePort = 443
+            }
+        } else if arg.hasPrefix("--http") {
+            opts.proto = "http"
+            if arg.contains("=") {
+                let parts = arg.split(separator: "=", maxSplits: 1)
+                if parts.count == 2, let p = Int(parts[1]) {
+                    opts.servePort = p
+                }
+            } else if i + 1 < args.count, let p = Int(args[i + 1]) {
+                opts.servePort = p
+                i += 1
+            } else {
+                opts.servePort = 80
+            }
+        } else if arg.hasPrefix("--tcp") {
+            opts.proto = "tcp"
+            if arg.contains("=") {
+                let parts = arg.split(separator: "=", maxSplits: 1)
+                if parts.count == 2, let p = Int(parts[1]) {
+                    opts.servePort = p
+                }
+            } else if i + 1 < args.count, let p = Int(args[i + 1]) {
+                opts.servePort = p
+                i += 1
+            }
+        } else if arg.hasPrefix("--tls-terminated-tcp") {
+            opts.proto = "tls-terminated-tcp"
+            if arg.contains("=") {
+                let parts = arg.split(separator: "=", maxSplits: 1)
+                if parts.count == 2, let p = Int(parts[1]) {
+                    opts.servePort = p
+                }
+            } else if i + 1 < args.count, let p = Int(args[i + 1]) {
+                opts.servePort = p
+                i += 1
+            }
+        } else if arg.hasPrefix("--set-path") {
+            if arg.contains("=") {
+                let parts = arg.split(separator: "=", maxSplits: 1)
+                if parts.count == 2 {
+                    opts.path = String(parts[1])
+                }
+            } else if i + 1 < args.count {
+                opts.path = args[i + 1]
+                i += 1
+            }
+        } else if arg.hasPrefix("--proxy-protocol") {
+            if arg.contains("=") {
+                let parts = arg.split(separator: "=", maxSplits: 1)
+                if parts.count == 2, let v = Int(parts[1]) {
+                    opts.proxyProtocol = v
+                }
+            } else if i + 1 < args.count, let v = Int(args[i + 1]) {
+                opts.proxyProtocol = v
+                i += 1
+            }
+        } else if !arg.hasPrefix("-") {
+            positional.append(arg)
+        }
+        i += 1
+    }
+
+    if !opts.path.hasPrefix("/") {
+        opts.path = "/" + opts.path
+    }
+
+    if let firstPos = positional.first {
+        if firstPos != "add" && firstPos != "remove" && firstPos != "off" && firstPos != "list" && firstPos != "status" && firstPos != "reset" && firstPos != "reapply" {
+            opts.target = firstPos
+        } else if positional.count > 1 {
+            opts.target = positional[1]
+        }
+    }
+
+    return opts
+}
+
 func handleServeCommand(_ args: [String], configManager: ConfigManager, client: TailscaleClient) {
-    guard let action = args.first else {
-        print("Usage: tail-userspace serve [list|add|remove|reset]")
+    if args.isEmpty || args.contains("-h") || args.contains("--help") {
+        print("""
+        Usage:
+          tail-userspace serve <target> [flags]
+          tail-userspace serve add <target> [flags]
+          tail-userspace serve remove <target|port> [--set-path=<path>]
+          tail-userspace serve off [flags]
+          tail-userspace serve status [--json]
+          tail-userspace serve list
+          tail-userspace serve reset
+          tail-userspace serve reapply
+
+        Targets:
+          <port>            Local port number (e.g. 3000, 8080)
+          <url>             Full HTTP/HTTPS URL (e.g. http://localhost:3000/api)
+          <insecure-url>    Self-signed HTTPS backend (e.g. https+insecure://localhost:8443)
+
+        Flags:
+          --https=<port>    Expose HTTPS endpoint at port (default: 443)
+          --http=<port>     Expose HTTP endpoint at port (default: 80)
+          --tcp=<port>      Expose raw TCP forwarder at port
+          --tls-terminated-tcp=<port>
+                            Expose TLS-terminated TCP forwarder at port
+          --set-path=<path> Mount handler under subpath (default: /)
+          --proxy-protocol=<1|2>
+                            Send PROXY protocol header
+          --bg              Run in background and save permanently to config.json
+        """)
         return
     }
 
-    switch action {
-    case "list":
+    let opts = parseServeArgs(args)
+
+    if opts.isStatus {
+        let output = client.getServeStatus(json: opts.isJson)
+        print(output)
+        if !opts.isJson {
+            let config = configManager.load()
+            let disc = client.checkServeDiscrepancies(config: config)
+            let errors = disc.filter { $0.kind == .notOnDaemon || $0.kind == .mismatch }
+            if !errors.isEmpty {
+                print("\n⚠️ Discrepancy detected with config.json:")
+                for e in errors {
+                    print("  • \(e.message)")
+                }
+                print("Run 'tail-userspace serve reapply' to synchronize routes.")
+            }
+        }
+        return
+    }
+
+    if opts.isReset {
+        do {
+            try client.resetServe()
+            print("✓ Tailscale serve configuration reset.")
+        } catch {
+            print("✗ Failed to reset serve: \(error.localizedDescription)")
+            exit(1)
+        }
+        return
+    }
+
+    if opts.isReapply {
         let config = configManager.load()
         let status = client.getStatus()
+        guard status.isOnline else {
+            print("✗ Cannot reapply: Tailscale daemon is offline. Run 'tail-userspace start' first.")
+            exit(1)
+        }
+        do {
+            try client.reapplyConfiguredServeRoutes(config)
+            let count = config.serveRoutes.filter { $0.enabled }.count
+            print("✓ Reapplied \(count) configured serve route(s) to live daemon.")
+        } catch {
+            print("✗ Failed to reapply routes: \(error.localizedDescription)")
+            exit(1)
+        }
+        return
+    }
+
+    if opts.isList {
+        let config = configManager.load()
+        let status = client.getStatus()
+        let host = status.selfDNSName.isEmpty ? "your-node.ts.net" : status.selfDNSName
+        let disc = client.checkServeDiscrepancies(config: config)
+
         print("Configured Serve Routes:")
-        for r in config.serveRoutes {
-            let state = r.enabled ? "Active" : "Disabled"
-            let host = status.selfDNSName.isEmpty ? "your-node.ts.net" : status.selfDNSName
-            print("  • [\(state)] localhost:\(r.localPort) ➔ https://\(host):\(r.servePort)\(r.path)")
+        if config.serveRoutes.isEmpty {
+            print("  (None configured)")
+        } else {
+            for r in config.serveRoutes {
+                let d = disc.first(where: { $0.route.id == r.id })
+                let statusBadge: String
+                switch d?.kind {
+                case .inSync: statusBadge = "✓ In Sync"
+                case .notOnDaemon: statusBadge = "⚠️ Not on Daemon"
+                case .mismatch: statusBadge = "🔄 Mismatch"
+                default: statusBadge = r.enabled ? "Active" : "Disabled"
+                }
+                print("  • [\(statusBadge)] \(r.target) ➔ \(r.proto)://\(host):\(r.servePort)\(r.path)")
+            }
+        }
+        return
+    }
+
+    if opts.isOff || args.contains("remove") || args.contains("off") {
+        let config = configManager.load()
+        if let tgt = opts.target {
+            if let route = config.serveRoutes.first(where: {
+                $0.target == tgt ||
+                "\($0.localPort)" == tgt ||
+                $0.target.contains(":\(tgt)") ||
+                $0.target.hasSuffix(":\(tgt)")
+            }) {
+                try? client.removeServeRouteLive(route)
+                try? configManager.removeServeRoute(id: route.id)
+                print("✓ Removed and unmounted serve route for \(route.target) (\(route.proto)://:\(route.servePort)\(route.path)).")
+                return
+            }
         }
 
-    case "add":
-        guard args.count >= 2, let localPort = Int(args[1]) else {
-            print("Usage: tail-userspace serve add <localPort> [--serve-port <port>]")
+        // Fallback: match by endpoint port and path (e.g. serve off --https=443 --set-path=/api)
+        if let route = config.serveRoutes.first(where: {
+            $0.servePort == opts.servePort && $0.path == opts.path && (opts.proto == $0.proto)
+        }) {
+            try? client.removeServeRouteLive(route)
+            try? configManager.removeServeRoute(id: route.id)
+            print("✓ Removed and unmounted serve route for \(route.target) (\(route.proto)://:\(route.servePort)\(route.path)).")
             return
         }
-        var servePort = 443
-        if let portIdx = args.firstIndex(of: "--serve-port"), portIdx + 1 < args.count, let p = Int(args[portIdx + 1]) {
-            servePort = p
-        }
-        let route = ServeRoute(localPort: localPort, servePort: servePort)
+
+        let route = ServeRoute(
+            target: opts.target ?? "",
+            servePort: opts.servePort,
+            proto: opts.proto,
+            path: opts.path
+        )
+        try? client.removeServeRouteLive(route)
+        print("✓ Turned off serve endpoint on \(route.proto)://:\(route.servePort)\(route.path).")
+        return
+    }
+
+    // Adding/running a serve route
+    guard let rawTarget = opts.target, !rawTarget.isEmpty else {
+        print("✗ Target is required. E.g.: 'tail-userspace serve 3000' or 'tail-userspace serve --bg http://localhost:8080/api'")
+        exit(1)
+    }
+
+    var normalizedTarget = rawTarget
+    if normalizedTarget.hasPrefix("localhost:") || normalizedTarget.hasPrefix("127.0.0.1:") {
+        normalizedTarget = "http://" + normalizedTarget
+    }
+
+    let route = ServeRoute(
+        target: normalizedTarget,
+        servePort: opts.servePort,
+        proto: opts.proto,
+        path: opts.path,
+        enabled: true,
+        proxyProtocol: opts.proxyProtocol
+    )
+
+    let status = client.getStatus()
+    let host = status.selfDNSName.isEmpty ? "your-node.ts.net" : status.selfDNSName
+
+    if opts.isBackground {
         do {
             try configManager.addServeRoute(route)
-            print("✓ Saved serve route: localhost:\(localPort) ➔ port \(servePort)")
-            if client.getStatus().isOnline {
-                try client.applyServeRoute(route)
-                print("✓ Applied to live Tailscale daemon.")
+            print("✓ Saved serve route to config.json")
+            if status.isOnline {
+                try client.applyServeRoute(route, background: true)
+                print("✓ Applied to live Tailscale daemon:")
+                print("  Available within your tailnet:")
+                print("  \(route.proto)://\(host):\(route.servePort)\(route.path)")
+                print("  |-- proxies to \(route.target)")
             } else {
                 print("ℹ Route saved. Will be applied automatically when daemon is online.")
             }
         } catch {
             print("✗ Failed to save serve route: \(error.localizedDescription)")
+            exit(1)
+        }
+    } else {
+        // Foreground attached mode
+        guard status.isOnline else {
+            print("✗ Cannot start foreground serve: Tailscale daemon is offline.")
+            print("  Run 'tail-userspace start' first, or pass '--bg' to save the route for later.")
+            exit(1)
         }
 
-    case "remove":
-        guard args.count >= 2, let localPort = Int(args[1]) else {
-            print("Usage: tail-userspace serve remove <localPort>")
-            return
-        }
-        let config = configManager.load()
-        if let route = config.serveRoutes.first(where: { $0.localPort == localPort }) {
-            try? configManager.removeServeRoute(id: route.id)
-            print("✓ Removed serve route for port \(localPort).")
-        } else {
-            print("✗ No route found for port \(localPort).")
-        }
-
-    case "reset":
         do {
-            try client.resetServe()
-            print("✓ Tailscale serve configuration reset.")
+            try client.applyServeRoute(route, background: true)
         } catch {
-            print("✗ Failed: \(error.localizedDescription)")
+            print("✗ Failed to apply serve route on daemon: \(error.localizedDescription)")
+            exit(1)
         }
 
-    default:
-        print("Unknown serve action '\(action)'")
+        let session = EphemeralServeSession(id: route.id, pid: getpid(), route: route, createdAt: Date())
+        try? configManager.saveEphemeralSession(session)
+
+        print("Available within your tailnet:\n")
+        print("  \(route.proto)://\(host):\(route.servePort)\(route.path)")
+        print("  |-- proxies to \(route.target)\n")
+        print("⚡ [CLI] Foreground serve session active (PID: \(getpid()))")
+        print("Press Ctrl+C to exit and unmount this serve endpoint.\n")
+
+        var isCleanedUp = false
+        let cleanup = {
+            guard !isCleanedUp else { return }
+            isCleanedUp = true
+            print("\nUnmounting serve endpoint...")
+            try? client.removeServeRouteLive(route)
+            try? configManager.removeEphemeralSession(id: session.id)
+            print("✓ Serve endpoint unmounted.")
+            exit(0)
+        }
+
+        let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        let sigterm = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        sigint.setEventHandler(handler: cleanup)
+        sigterm.setEventHandler(handler: cleanup)
+        signal(SIGINT, SIG_IGN)
+        signal(SIGTERM, SIG_IGN)
+        sigint.resume()
+        sigterm.resume()
+
+        dispatchMain()
     }
 }
 
