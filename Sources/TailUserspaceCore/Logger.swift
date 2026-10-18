@@ -15,6 +15,7 @@ public final class Logger: @unchecked Sendable {
 
     private let lock = NSLock()
     private var _level: VerbosityLevel = .normal
+    private var _useStderr: Bool = false
 
     public var level: VerbosityLevel {
         get {
@@ -29,23 +30,47 @@ public final class Logger: @unchecked Sendable {
         }
     }
 
+    public var useStderr: Bool {
+        get {
+            lock.lock()
+            defer { lock.unlock() }
+            return _useStderr
+        }
+        set {
+            lock.lock()
+            defer { lock.unlock() }
+            _useStderr = newValue
+        }
+    }
+
     public init() {}
+
+    private func logLine(_ prefix: String, _ message: String) {
+        let line = "\(prefix) \(message)"
+        if useStderr {
+            if let data = (line + "\n").data(using: .utf8) {
+                FileHandle.standardError.write(data)
+            }
+        } else {
+            print(line)
+        }
+    }
 
     public func info(_ message: @autoclosure () -> String) {
         if level >= .verbose {
-            print("[INFO] \(message())")
+            logLine("[INFO]", message())
         }
     }
 
     public func debug(_ message: @autoclosure () -> String) {
         if level >= .debug {
-            print("[DEBUG] \(message())")
+            logLine("[DEBUG]", message())
         }
     }
 
     public func trace(_ message: @autoclosure () -> String) {
         if level >= .debug {
-            print("[TRACE] \(message())")
+            logLine("[TRACE]", message())
         }
     }
 }

@@ -24,11 +24,12 @@ dist: app
 	@echo "Creating distribution archive..."
 	@ditto -c -k --sequesterRsrc --keepParent TailUserspace.app TailUserspace-macOS.zip
 	@cp .build/release/tail-userspace ./tail-userspace-cli
+	@cp .build/release/tail-userspace-mcp ./tail-userspace-mcp
 	@echo "✓ Distribution zip created: TailUserspace-macOS.zip"
 
 clean:
 	swift package clean
-	rm -rf .build TailUserspace.app TailUserspace-macOS.zip tail-userspace-cli
+	rm -rf .build TailUserspace.app TailUserspace-macOS.zip tail-userspace-cli tail-userspace-mcp
 
 test:
 	swift run TailUserspaceTests

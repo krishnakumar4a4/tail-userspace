@@ -298,6 +298,319 @@ do {
     failed += 1
 }
 
+// Test 10: Model Context Protocol (MCP) Server Suite
+do {
+    let uniqueID = UUID().uuidString
+    let tempDir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("tail_mcp_test_\(uniqueID)")
+    try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+    setenv("TAIL_USERSPACE_DIR", tempDir.path, 1)
+
+    let testConfigManager = ConfigManager()
+    let testServer = MCPServer(
+        client: TailscaleClient.shared,
+        supervisor: DaemonSupervisor.shared,
+        configManager: testConfigManager,
+        forwarder: SOCKS5Forwarder.shared
+    )
+
+    // Helper to send JSON string and get response dictionary
+    func sendMCP(_ reqObj: [String: Any]) -> [String: Any]? {
+        guard let data = try? JSONSerialization.data(withJSONObject: reqObj) else { return nil }
+        guard let resData = testServer.handleMessageData(data) else { return nil }
+        return try? JSONSerialization.jsonObject(with: resData) as? [String: Any]
+    }
+
+    // 10a: Handshake (initialize)
+    let initReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": [
+            "protocolVersion": "2024-11-05",
+            "capabilities": [:] as [String: Any],
+            "clientInfo": ["name": "test-client", "version": "1.0"]
+        ]
+    ]
+    let initRes = sendMCP(initReq)
+    assertTest(initRes?["jsonrpc"] as? String == "2.0", "MCP initialize returns jsonrpc 2.0")
+    assertTest(initRes?["id"] as? Int == 1, "MCP initialize returns matching id 1")
+    let initResult = initRes?["result"] as? [String: Any]
+    assertTest(initResult?["protocolVersion"] as? String == "2024-11-05", "MCP protocolVersion matches 2024-11-05")
+    let serverInfo = initResult?["serverInfo"] as? [String: Any]
+    assertTest(serverInfo?["name"] as? String == "tail-userspace", "MCP serverInfo name is tail-userspace")
+    let caps = initResult?["capabilities"] as? [String: Any]
+    assertTest(caps?["tools"] != nil && caps?["resources"] != nil && caps?["prompts"] != nil, "MCP capabilities contain tools, resources, prompts")
+
+    // 10b: Notification initialized
+    let notifReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized",
+        "params": [:] as [String: Any]
+    ]
+    let notifRes = sendMCP(notifReq)
+    assertTest(notifRes == nil, "MCP notification returns nil (no response)")
+
+    // 10c: Ping
+    let pingReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": "ping-123",
+        "method": "ping"
+    ]
+    let pingRes = sendMCP(pingReq)
+    assertTest(pingRes?["id"] as? String == "ping-123", "MCP ping returns string id")
+    assertTest((pingRes?["result"] as? [String: Any])?.isEmpty == true, "MCP ping returns empty result object")
+
+    // 10d: Tools List
+    let toolsReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    ]
+    let toolsRes = sendMCP(toolsReq)
+    let toolsList = (toolsRes?["result"] as? [String: Any])?["tools"] as? [[String: Any]] ?? []
+    assertTest(toolsList.count >= 19, "MCP tools/list returns at least 19 tools (got \(toolsList.count))")
+    let toolNames = Set(toolsList.compactMap { $0["name"] as? String })
+    let requiredTools: Set<String> = [
+        "get_status", "daemon_start", "daemon_stop", "connect", "disconnect",
+        "get_env", "get_daemon_logs", "list_serve_routes", "add_serve_route",
+        "remove_serve_route", "reapply_serve_routes", "reset_serve", "get_serve_status",
+        "list_remote_proxies", "add_remote_proxy", "remove_remote_proxy",
+        "toggle_remote_proxy", "get_config", "update_config"
+    ]
+    assertTest(requiredTools.isSubset(of: toolNames), "All expected tool names exist in tools/list")
+
+    // 10e: Tool Call get_status
+    let statusCallReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": [
+            "name": "get_status",
+            "arguments": [:] as [String: Any]
+        ]
+    ]
+    let statusCallRes = sendMCP(statusCallReq)
+    let statusCallResult = statusCallRes?["result"] as? [String: Any]
+    assertTest(statusCallResult?["isError"] as? Bool == false, "get_status isError == false")
+    let statusContent = (statusCallResult?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+    assertTest(statusContent.contains("Tailscale Userspace Daemon Status"), "get_status content contains header")
+
+    // 10f: Tool Call get_env
+    let envCallReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": [
+            "name": "get_env",
+            "arguments": [:] as [String: Any]
+        ]
+    ]
+    let envCallRes = sendMCP(envCallReq)
+    let envContent = ((envCallRes?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+    assertTest(envContent.contains("export ALL_PROXY=socks5://127.0.0.1:"), "get_env contains export ALL_PROXY")
+
+    // 10g: Tool Call get_config
+    let configCallReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": [
+            "name": "get_config",
+            "arguments": [:] as [String: Any]
+        ]
+    ]
+    let configCallRes = sendMCP(configCallReq)
+    let configContent = ((configCallRes?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+    assertTest(configContent.contains("socks5Port"), "get_config content contains socks5Port")
+
+    // 10h: Tool Call add_remote_proxy & list & toggle & remove
+    let addProxyReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": [
+            "name": "add_remote_proxy",
+            "arguments": [
+                "localPort": 18080,
+                "remoteHost": "nas.tailnet.ts.net",
+                "remotePort": 80,
+                "terminateTLS": true
+            ]
+        ]
+    ]
+    let addProxyRes = sendMCP(addProxyReq)
+    let addProxyText = ((addProxyRes?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+    assertTest(addProxyText.contains("localhost:18080"), "add_remote_proxy text contains localhost:18080")
+    assertTest(testConfigManager.load().remoteProxies.contains { $0.localPort == 18080 && $0.terminateTLS }, "Proxy saved in config with TLS")
+
+    let listProxiesReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "tools/call",
+        "params": ["name": "list_remote_proxies", "arguments": [:] as [String: Any]]
+    ]
+    let listProxiesRes = sendMCP(listProxiesReq)
+    let listProxiesText = ((listProxiesRes?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+    assertTest(listProxiesText.contains("localhost:18080"), "list_remote_proxies text contains localhost:18080")
+
+    let toggleProxyReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "tools/call",
+        "params": ["name": "toggle_remote_proxy", "arguments": ["localPort": 18080]]
+    ]
+    let toggleProxyRes = sendMCP(toggleProxyReq)
+    let toggleProxyText = ((toggleProxyRes?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+    assertTest(toggleProxyText.contains("disabled"), "toggle_remote_proxy toggled to disabled")
+
+    let removeProxyReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 9,
+        "method": "tools/call",
+        "params": ["name": "remove_remote_proxy", "arguments": ["localPort": 18080]]
+    ]
+    let removeProxyRes = sendMCP(removeProxyReq)
+    let removeProxyText = ((removeProxyRes?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+    assertTest(removeProxyText.contains("Remote proxy removed"), "remove_remote_proxy succeeded")
+    assertTest(!testConfigManager.load().remoteProxies.contains { $0.localPort == 18080 }, "Proxy removed from config")
+
+    // 10i: Tool Call add_serve_route & list & remove
+    let addServeReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 10,
+        "method": "tools/call",
+        "params": [
+            "name": "add_serve_route",
+            "arguments": [
+                "target": "3000",
+                "path": "/api",
+                "servePort": 8443,
+                "proto": "https"
+            ]
+        ]
+    ]
+    let addServeRes = sendMCP(addServeReq)
+    let addServeText = ((addServeRes?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+    assertTest(addServeText.contains("Serve route created"), "add_serve_route succeeded")
+    assertTest(testConfigManager.load().serveRoutes.contains { $0.servePort == 8443 && $0.path == "/api" }, "Serve route saved in config")
+
+    let listServeReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 11,
+        "method": "tools/call",
+        "params": ["name": "list_serve_routes", "arguments": [:] as [String: Any]]
+    ]
+    let listServeRes = sendMCP(listServeReq)
+    let listServeText = ((listServeRes?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+    assertTest(listServeText.contains("3000") && listServeText.contains("/api"), "list_serve_routes contains 3000 and /api")
+
+    let removeServeReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 12,
+        "method": "tools/call",
+        "params": ["name": "remove_serve_route", "arguments": ["target": "3000", "path": "/api", "servePort": 8443]]
+    ]
+    let removeServeRes = sendMCP(removeServeReq)
+    let removeServeText = ((removeServeRes?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String ?? ""
+    assertTest(removeServeText.contains("Removed serve route"), "remove_serve_route succeeded")
+    assertTest(!testConfigManager.load().serveRoutes.contains { $0.servePort == 8443 }, "Serve route removed from config")
+
+    // 10j: Resources List & Read
+    let resListReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 13,
+        "method": "resources/list"
+    ]
+    let resListRes = sendMCP(resListReq)
+    let resList = (resListRes?["result"] as? [String: Any])?["resources"] as? [[String: Any]] ?? []
+    assertTest(resList.count >= 5, "MCP resources/list returns at least 5 resources")
+    let resURIs = Set(resList.compactMap { $0["uri"] as? String })
+    assertTest(resURIs.contains("tailuserspace://status"), "resources include tailuserspace://status")
+    assertTest(resURIs.contains("tailuserspace://config"), "resources include tailuserspace://config")
+
+    let resReadReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 14,
+        "method": "resources/read",
+        "params": ["uri": "tailuserspace://config"]
+    ]
+    let resReadRes = sendMCP(resReadReq)
+    let readContents = (resReadRes?["result"] as? [String: Any])?["contents"] as? [[String: Any]]
+    let readText = readContents?.first?["text"] as? String ?? ""
+    assertTest(readText.contains("socks5Port"), "resources/read tailuserspace://config returns valid json with socks5Port")
+
+    // 10k: Prompts List & Get
+    let promptsListReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 15,
+        "method": "prompts/list"
+    ]
+    let promptsListRes = sendMCP(promptsListReq)
+    let promptsList = (promptsListRes?["result"] as? [String: Any])?["prompts"] as? [[String: Any]] ?? []
+    assertTest(promptsList.count >= 3, "MCP prompts/list returns at least 3 prompts")
+
+    let promptGetReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 16,
+        "method": "prompts/get",
+        "params": ["name": "diagnose", "arguments": [:] as [String: Any]]
+    ]
+    let promptGetRes = sendMCP(promptGetReq)
+    let promptMessages = (promptGetRes?["result"] as? [String: Any])?["messages"] as? [[String: Any]]
+    let promptText = (promptMessages?.first?["content"] as? [String: Any])?["text"] as? String ?? ""
+    assertTest(promptText.contains("TailUserspace instance"), "prompts/get diagnose returns expected content")
+
+    // 10l: Error Handling (Unknown method, Invalid JSON, Unknown tool)
+    let unknownMethodReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 17,
+        "method": "unknown/nonexistent"
+    ]
+    let unknownRes = sendMCP(unknownMethodReq)
+    let errObj = unknownRes?["error"] as? [String: Any]
+    assertTest(errObj?["code"] as? Int == MCPProtocol.methodNotFound, "Unknown method returns methodNotFound code (-32601)")
+
+    let invalidJsonData = "This is not JSON\n".data(using: .utf8)!
+    let parseErrData = testServer.handleMessageData(invalidJsonData)
+    let parseErrObj = (try? JSONSerialization.jsonObject(with: parseErrData!) as? [String: Any])?["error"] as? [String: Any]
+    assertTest(parseErrObj?["code"] as? Int == MCPProtocol.parseError, "Invalid JSON returns parseError code (-32700)")
+
+    let unknownToolReq: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 18,
+        "method": "tools/call",
+        "params": ["name": "completely_fake_tool"]
+    ]
+    let unknownToolRes = sendMCP(unknownToolReq)
+    let unknownToolResult = unknownToolRes?["result"] as? [String: Any]
+    assertTest(unknownToolResult?["isError"] as? Bool == true, "Unknown tool call returns isError: true")
+
+    // 10m: End-to-end pipe streaming (multi-message I/O)
+    let inputPipe = Pipe()
+    let outputPipe = Pipe()
+
+    let msg1 = "{\"jsonrpc\":\"2.0\",\"id\":101,\"method\":\"ping\"}\n"
+    let msg2 = "{\"jsonrpc\":\"2.0\",\"id\":102,\"method\":\"ping\"}\n"
+    inputPipe.fileHandleForWriting.write(msg1.data(using: .utf8)!)
+    inputPipe.fileHandleForWriting.write(msg2.data(using: .utf8)!)
+    try? inputPipe.fileHandleForWriting.close()
+
+    testServer.run(inputHandle: inputPipe.fileHandleForReading, outputHandle: outputPipe.fileHandleForWriting)
+    try? outputPipe.fileHandleForWriting.close()
+
+    let streamOutData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+    let streamOutStr = String(data: streamOutData, encoding: .utf8) ?? ""
+    let lines = streamOutStr.components(separatedBy: .newlines).filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    assertTest(lines.count == 2, "Stream processed 2 messages over pipes")
+    assertTest(lines[0].contains("\"id\":101") && lines[1].contains("\"id\":102"), "Stream output contains matching message IDs")
+
+    unsetenv("TAIL_USERSPACE_DIR")
+    try? FileManager.default.removeItem(at: tempDir)
+} catch {
+    print("Test 10 error: \(error)")
+    failed += 1
+}
+
 print("\n=== Test Results: \(passed) passed, \(failed) failed ===")
 if failed > 0 {
     exit(1)

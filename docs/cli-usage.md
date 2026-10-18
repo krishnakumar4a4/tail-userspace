@@ -194,7 +194,23 @@ tail-userspace proxy remove 9999
 
 ---
 
-## 5. Diagnostic Paths & Environment Overrides
+## 5. Model Context Protocol (MCP) Server (`tail-userspace mcp`)
+
+TailUserspace includes an embedded Model Context Protocol (MCP) server for integration with AI coding assistants (Claude Desktop, Cursor, Antigravity, VS Code, Zed):
+
+```bash
+# Start MCP server on standard I/O (JSON-RPC 2.0):
+tail-userspace mcp
+
+# Display available MCP tools, resources, and configuration snippets:
+tail-userspace mcp --help
+```
+
+See the **[MCP Server Reference Guide](mcp-server.md)** for complete client configurations, tool schemas, and prompt templates.
+
+---
+
+## 6. Diagnostic Paths & Environment Overrides
 
 TailUserspace supports environment variable overrides for custom locations or multi-instance testing:
 

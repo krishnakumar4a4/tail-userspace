@@ -609,6 +609,14 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
             systemImage: "arrow.counterclockwise"
         )
         menu.addItem(resetServeItem)
+
+        let mcpItem = makeMenuItem(
+            title: "Model Context Protocol (MCP) Setup...",
+            action: #selector(showMCPSetupDialog),
+            systemImage: "cpu",
+            toolTip: "Configure MCP for Claude Desktop, Cursor, Antigravity, or other AI agents"
+        )
+        menu.addItem(mcpItem)
     }
 
     private func buildFooterSection(menu: NSMenu) {
@@ -1434,6 +1442,47 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
             copyToClipboard(jsonString)
         } else if response == .alertThirdButtonReturn {
             openConfigFile()
+        }
+    }
+
+    @objc private func showMCPSetupDialog() {
+        let snippet = """
+        {
+          "mcpServers": {
+            "tail-userspace": {
+              "command": "tail-userspace",
+              "args": ["mcp"]
+            }
+          }
+        }
+        """
+
+        let alert = NSAlert()
+        alert.messageText = "Model Context Protocol (MCP) Setup"
+        alert.informativeText = "TailUserspace includes a built-in MCP server interface that connects AI coding assistants (Claude Desktop, Cursor, Antigravity, VS Code, Zed) to manage daemon status, inspect tailnet routes, and configure port forwarding.\n\nCommand: tail-userspace mcp (or tail-userspace-mcp)"
+        alert.addButton(withTitle: "Close")
+        alert.addButton(withTitle: "Copy MCP Config JSON")
+
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 180))
+        scrollView.borderType = .bezelBorder
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = true
+        scrollView.autohidesScrollers = false
+
+        let textView = NSTextView(frame: NSRect(x: 0, y: 0, width: 480, height: 180))
+        textView.string = snippet
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.font = NSFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        textView.autoresizingMask = [.width, .height]
+        scrollView.documentView = textView
+
+        alert.accessoryView = scrollView
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if response == .alertSecondButtonReturn {
+            copyToClipboard(snippet)
         }
     }
 

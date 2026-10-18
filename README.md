@@ -23,6 +23,7 @@ Standard Tailscale on macOS requires root/admin permissions, installs a system-w
   * **Inbound (Serve)**: Expose local ports (e.g. `localhost:3000`) securely to your private tailnet via HTTPS with auto TLS.
   * **Outbound (Proxy)**: Map remote tailnet services (e.g. `remote-nas.ts.net:80`) to local ports (e.g. `localhost:8080`) via the built-in SOCKS5 forwarder with optional native TLS termination (`--tls`).
 * **Coexists with Tailscale Desktop**: Can run simultaneously alongside the official Tailscale Desktop app as an isolated secondary node on your tailnet.
+* **AI Agent Ready (Native MCP Server)**: First-class Model Context Protocol interface supporting Claude Desktop, Cursor, Antigravity, and VS Code for automated tailnet routing and diagnostics.
 * **Native & Featherweight**: **~398 KB bundle**, <15 MB RAM, instant startup, zero Dock clutter (`LSUIElement = true`).
 
 ---
@@ -133,6 +134,7 @@ Connecting to Tailscale network...
 | `tail-userspace proxy list` | Lists all active outbound remote proxies |
 | `tail-userspace proxy remove <local>` | Removes an outbound proxy and frees the local port |
 | `tail-userspace logs` | Prints absolute path to `tailscaled.log` |
+| `tail-userspace mcp` | Starts JSON-RPC 2.0 Model Context Protocol (MCP) server for AI assistants |
 
 ### Verbosity Flags (`-v` and `-vv`)
 Pass `-v` (verbose diagnostics) or `-vv` (full debug trace with raw JSON dumps and process standard I/O) to any command:
@@ -143,6 +145,32 @@ tail-userspace up -vv
 ```
 
 👉 For complete command syntax, advanced flags, and scripting examples, see the **[CLI Reference & Usage Guide](docs/cli-usage.md)**.
+
+---
+
+## Model Context Protocol (MCP) Server for AI Assistants
+
+TailUserspace includes native, first-class support for the open **Model Context Protocol (MCP)**, connecting directly to **Claude Desktop**, **Cursor**, **Google Antigravity**, **Gemini CLI**, **VS Code (Cline / Roo Code)**, and **Zed**.
+
+AI assistants can inspect daemon status, diagnose routing issues, expose local development servers to the tailnet (`add_serve_route`), and tunnel remote tailnet databases or services locally (`add_remote_proxy`).
+
+### Quick Configuration (Claude Desktop / Cursor)
+```json
+{
+  "mcpServers": {
+    "tail-userspace": {
+      "command": "tail-userspace",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+* **19 Built-in Tools**: Full lifecycle (`get_status`, `daemon_start`, `daemon_stop`, `connect`, `disconnect`), Serve management (`add_serve_route`, `list_serve_routes`, `remove_serve_route`, `reset_serve`), Proxy management (`add_remote_proxy`, `list_remote_proxies`, `remove_remote_proxy`, `toggle_remote_proxy`), and configuration inspection.
+* **5 MCP Resources**: Directly inspect `tailuserspace://status`, `config`, `serve`, `proxies`, and daemon `logs`.
+* **3 MCP Prompts**: Pre-configured templates for diagnostics (`diagnose`), exposing services (`expose-service`), and remote tunneling (`tunnel-remote-service`).
+
+👉 For complete tool definitions, resource schemas, and IDE setup guides, see the **[MCP Server Guide](docs/mcp-server.md)**.
 
 ---
 

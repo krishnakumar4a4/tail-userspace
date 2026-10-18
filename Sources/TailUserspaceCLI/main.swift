@@ -51,6 +51,11 @@ func printUsage() {
                          Use --tls to terminate remote TLS and expose as plain HTTP locally
       proxy remove <localPort>
                          Remove a configured Outbound Remote Proxy
+
+    AI / MCP COMMANDS (Model Context Protocol):
+      mcp                Start JSON-RPC 2.0 MCP server on stdio for AI assistants
+                         (Claude Desktop, Cursor, Antigravity, VS Code, Zed)
+                         Pass --help to view configuration snippets and available tools
                          
     GLOBAL OPTIONS:
       -v, --verbose      Enable verbose output (detailed steps, diagnostic paths)
@@ -303,11 +308,88 @@ func main() {
     case "proxy":
         handleProxyCommand(subArgs, configManager: configManager, forwarder: forwarder)
 
+    case "mcp":
+        handleMCPCommand(subArgs)
+
     default:
         print("Unknown command '\(subcommand)'")
         printUsage()
         exit(1)
     }
+}
+
+func handleMCPCommand(_ args: [String]) {
+    if args.contains("-h") || args.contains("--help") {
+        print("""
+        TailUserspace MCP Server - Model Context Protocol Interface
+
+        Starts the Model Context Protocol (MCP) server for TailUserspace over standard I/O (JSON-RPC 2.0).
+        Enables AI assistants (Claude Desktop, Cursor, Antigravity, VS Code, Zed) to manage daemon state,
+        query tailnet connectivity, configure inbound serve routes, and establish outbound remote proxies.
+
+        USAGE:
+          tail-userspace mcp
+          tail-userspace-mcp
+
+        AI CLIENT CONFIGURATION:
+
+        Claude Desktop (~/Library/Application Support/Claude/claude_desktop_config.json):
+        {
+          "mcpServers": {
+            "tail-userspace": {
+              "command": "tail-userspace",
+              "args": ["mcp"]
+            }
+          }
+        }
+
+        Cursor / Antigravity / Gemini CLI (mcp.json):
+        {
+          "mcpServers": {
+            "tail-userspace": {
+              "command": "tail-userspace",
+              "args": ["mcp"]
+            }
+          }
+        }
+
+        AVAILABLE TOOLS (19):
+          • get_status            - Live daemon PID, backend state, IPs, domain, auth URL
+          • daemon_start          - Start userspace tailscaled daemon and listeners
+          • daemon_stop           - Stop daemon and proxy forwarders
+          • connect               - Connect node to Tailscale network (tailscale up)
+          • disconnect            - Disconnect node from Tailscale (tailscale down)
+          • get_env               - Shell export variables for SOCKS5/HTTP proxy
+          • get_daemon_logs       - Read recent tailscaled.log lines
+          • list_serve_routes     - List inbound serve routes and sync states
+          • add_serve_route       - Expose local port/URL to tailnet with HTTPS
+          • remove_serve_route    - Unmount and delete inbound serve route
+          • reapply_serve_routes  - Re-sync routes to live daemon
+          • reset_serve           - Reset all active Tailscale Serve endpoints
+          • get_serve_status      - Live daemon serve status output
+          • list_remote_proxies   - List outbound SOCKS5 remote proxies
+          • add_remote_proxy      - Map local port to remote tailnet service
+          • remove_remote_proxy   - Remove an outbound remote proxy
+          • toggle_remote_proxy   - Enable or disable an outbound remote proxy
+          • get_config            - Inspect persistent config.json
+          • update_config         - Update SOCKS5/HTTP proxy ports or autoStart
+
+        AVAILABLE RESOURCES (5):
+          • tailuserspace://status   - Live daemon & connection state JSON
+          • tailuserspace://config   - Current config.json
+          • tailuserspace://serve    - Inbound serve routes & discrepancy report
+          • tailuserspace://proxies  - Outbound remote proxies & listener states
+          • tailuserspace://logs     - Recent tailscaled daemon logs
+
+        AVAILABLE PROMPTS (3):
+          • diagnose                - Full diagnostic analysis of instance
+          • expose-service          - Guide to expose a local service via Serve
+          • tunnel-remote-service   - Guide to tunnel a remote tailnet service locally
+        """)
+        return
+    }
+
+    MCPServer.shared.runStdio()
 }
 
 struct ParsedServeOptions {

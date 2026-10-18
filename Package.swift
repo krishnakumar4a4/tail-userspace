@@ -18,6 +18,10 @@ let package = Package(
         .executable(
             name: "TailUserspaceApp",
             targets: ["TailUserspaceApp"]
+        ),
+        .executable(
+            name: "tail-userspace-mcp",
+            targets: ["TailUserspaceMCP"]
         )
     ],
     dependencies: [],
@@ -31,6 +35,11 @@ let package = Package(
             name: "TailUserspaceCLI",
             dependencies: ["TailUserspaceCore"],
             path: "Sources/TailUserspaceCLI"
+        ),
+        .executableTarget(
+            name: "TailUserspaceMCP",
+            dependencies: ["TailUserspaceCore"],
+            path: "Sources/TailUserspaceMCP"
         ),
         .executableTarget(
             name: "TailUserspaceApp",
