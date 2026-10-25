@@ -28,6 +28,11 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
         // Start proxies
         forwarder.startConfiguredProxies(config)
 
+        // Start embedded MCP HTTP Server
+        if config.mcpEnabled {
+            _ = try? MCPHTTPServer.shared.start(port: config.mcpPort)
+        }
+
         // Build initial menu
         buildMenu()
 
@@ -41,6 +46,7 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
     public func applicationWillTerminate(_ notification: Notification) {
         pollTimer?.invalidate()
         forwarder.stopAll()
+        MCPHTTPServer.shared.stop()
     }
 
     // MARK: - NSMenuDelegate (Instant Sync on Menu Open)
@@ -64,6 +70,13 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
 
         // Keep proxies active and synchronized with config changes
         forwarder.startConfiguredProxies(config)
+
+        // Keep MCP HTTP Server active and synchronized with config changes
+        if config.mcpEnabled && !MCPHTTPServer.shared.isRunning {
+            _ = try? MCPHTTPServer.shared.start(port: config.mcpPort)
+        } else if !config.mcpEnabled && MCPHTTPServer.shared.isRunning {
+            MCPHTTPServer.shared.stop()
+        }
 
         let activeCLI = client.cleanupStaleEphemeralSessionsAndUnmount()
         let hasRoutes = !config.serveRoutes.isEmpty || !config.remoteProxies.isEmpty || !activeCLI.isEmpty
@@ -610,11 +623,22 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
         )
         menu.addItem(resetServeItem)
 
+        let config = configManager.load()
+        if config.mcpEnabled {
+            let mcpUrlItem = makeMenuItem(
+                title: "MCP HTTP Server: http://127.0.0.1:\(config.mcpPort)/mcp",
+                action: #selector(copyMCPURL),
+                systemImage: "network",
+                toolTip: "Click to copy MCP HTTP endpoint URL (http://127.0.0.1:\(config.mcpPort)/mcp)"
+            )
+            menu.addItem(mcpUrlItem)
+        }
+
         let mcpItem = makeMenuItem(
             title: "Model Context Protocol (MCP) Setup...",
             action: #selector(showMCPSetupDialog),
             systemImage: "cpu",
-            toolTip: "Configure MCP for Claude Desktop, Cursor, Antigravity, or other AI agents"
+            toolTip: "Configure MCP for Claude Desktop, Cursor, Antigravity, or other AI agents via HTTP"
         )
         menu.addItem(mcpItem)
     }
@@ -1445,23 +1469,30 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
         }
     }
 
+    @objc private func copyMCPURL() {
+        let config = configManager.load()
+        copyToClipboard("http://127.0.0.1:\(config.mcpPort)/mcp")
+    }
+
     @objc private func showMCPSetupDialog() {
+        let config = configManager.load()
+        let port = config.mcpPort
         let snippet = """
         {
           "mcpServers": {
             "tail-userspace": {
-              "command": "tail-userspace",
-              "args": ["mcp"]
+              "url": "http://127.0.0.1:\(port)/mcp"
             }
           }
         }
         """
 
         let alert = NSAlert()
-        alert.messageText = "Model Context Protocol (MCP) Setup"
-        alert.informativeText = "TailUserspace includes a built-in MCP server interface that connects AI coding assistants (Claude Desktop, Cursor, Antigravity, VS Code, Zed) to manage daemon status, inspect tailnet routes, and configure port forwarding.\n\nCommand: tail-userspace mcp (or tail-userspace-mcp)"
+        alert.messageText = "Model Context Protocol (MCP) HTTP Setup"
+        alert.informativeText = "TailUserspace runs an embedded HTTP-based MCP server directly in this menu bar app.\n\nNo CLI installation required! AI assistants (Claude Desktop, Cursor, Antigravity, VS Code, Zed) connect seamlessly over HTTP on localhost:\n• HTTP Endpoint: http://127.0.0.1:\(port)/mcp\n• SSE Endpoint:  http://127.0.0.1:\(port)/sse"
         alert.addButton(withTitle: "Close")
         alert.addButton(withTitle: "Copy MCP Config JSON")
+        alert.addButton(withTitle: "Copy HTTP URL")
 
         let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 480, height: 180))
         scrollView.borderType = .bezelBorder
@@ -1483,6 +1514,8 @@ public final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate 
         let response = alert.runModal()
         if response == .alertSecondButtonReturn {
             copyToClipboard(snippet)
+        } else if response == .alertThirdButtonReturn {
+            copyToClipboard("http://127.0.0.1:\(port)/mcp")
         }
     }
 

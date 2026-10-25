@@ -611,6 +611,160 @@ do {
     failed += 1
 }
 
+// Test 11: Model Context Protocol (MCP) HTTP Server Suite
+do {
+    let testPort = 19858
+    let httpServer = MCPHTTPServer.shared
+    try httpServer.start(port: testPort)
+    assertTest(httpServer.isRunning, "MCPHTTPServer started and isRunning == true")
+    assertTest(httpServer.port == testPort, "MCPHTTPServer port matches testPort")
+
+    // Synchronous HTTP helper
+    func sendHTTPRequest(
+        method: String,
+        path: String,
+        headers: [String: String] = [:],
+        body: Data? = nil
+    ) -> (status: Int, headers: [String: String], data: Data)? {
+        guard let url = URL(string: "http://127.0.0.1:\(testPort)\(path)") else { return nil }
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        for (k, v) in headers {
+            request.setValue(v, forHTTPHeaderField: k)
+        }
+        request.httpBody = body
+        request.timeoutInterval = 5.0
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var responseStatus = 0
+        var responseHeaders: [String: String] = [:]
+        var responseData = Data()
+
+        let task = URLSession.shared.dataTask(with: request) { data, response, _ in
+            if let http = response as? HTTPURLResponse {
+                responseStatus = http.statusCode
+                for (k, v) in http.allHeaderFields {
+                    if let keyStr = k as? String, let valStr = v as? String {
+                        responseHeaders[keyStr.lowercased()] = valStr
+                    }
+                }
+            }
+            if let data = data {
+                responseData = data
+            }
+            semaphore.signal()
+        }
+        task.resume()
+        _ = semaphore.wait(timeout: .now() + 5.0)
+
+        guard responseStatus > 0 else { return nil }
+        return (responseStatus, responseHeaders, responseData)
+    }
+
+    // 11a: GET / status info
+    if let res = sendHTTPRequest(method: "GET", path: "/") {
+        assertTest(res.status == 200, "GET / returns 200 OK")
+        let json = (try? JSONSerialization.jsonObject(with: res.data)) as? [String: Any]
+        assertTest(json?["status"] as? String == "online", "GET / status is online")
+        assertTest(json?["name"] as? String == "tail-userspace", "GET / name is tail-userspace")
+        let endpoints = json?["endpoints"] as? [String: String]
+        assertTest(endpoints?["mcp"] != nil && endpoints?["sse"] != nil, "GET / returns mcp and sse endpoints")
+    } else {
+        assertTest(false, "GET / request failed")
+    }
+
+    // 11b: POST /mcp initialize
+    let initBody: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": ["protocolVersion": "2024-11-05", "capabilities": [:] as [String: Any]]
+    ]
+    let initData = try JSONSerialization.data(withJSONObject: initBody)
+    if let res = sendHTTPRequest(method: "POST", path: "/mcp", headers: ["Content-Type": "application/json"], body: initData) {
+        assertTest(res.status == 200, "POST /mcp initialize returns 200 OK")
+        let json = (try? JSONSerialization.jsonObject(with: res.data)) as? [String: Any]
+        let result = json?["result"] as? [String: Any]
+        assertTest(result?["protocolVersion"] as? String == "2024-11-05", "HTTP initialize returns protocolVersion 2024-11-05")
+    } else {
+        assertTest(false, "POST /mcp initialize request failed")
+    }
+
+    // 11c: POST /mcp tools/list
+    let toolsBody: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    ]
+    let toolsData = try JSONSerialization.data(withJSONObject: toolsBody)
+    if let res = sendHTTPRequest(method: "POST", path: "/mcp", headers: ["Content-Type": "application/json"], body: toolsData) {
+        assertTest(res.status == 200, "POST /mcp tools/list returns 200 OK")
+        let json = (try? JSONSerialization.jsonObject(with: res.data)) as? [String: Any]
+        let tools = (json?["result"] as? [String: Any])?["tools"] as? [[String: Any]] ?? []
+        assertTest(tools.count >= 19, "HTTP tools/list returns at least 19 tools")
+    } else {
+        assertTest(false, "POST /mcp tools/list request failed")
+    }
+
+    // 11d: POST /mcp tools/call get_status
+    let callBody: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": [
+            "name": "get_status",
+            "arguments": [:] as [String: Any]
+        ]
+    ]
+    let callData = try JSONSerialization.data(withJSONObject: callBody)
+    if let res = sendHTTPRequest(method: "POST", path: "/mcp", headers: ["Content-Type": "application/json"], body: callData) {
+        assertTest(res.status == 200, "POST /mcp tools/call returns 200 OK")
+        let json = (try? JSONSerialization.jsonObject(with: res.data)) as? [String: Any]
+        let result = json?["result"] as? [String: Any]
+        assertTest(result?["isError"] as? Bool == false, "HTTP tools/call isError == false")
+        let text = ((result?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        assertTest(text.contains("Tailscale Userspace Daemon Status"), "HTTP tools/call returns status text")
+    } else {
+        assertTest(false, "POST /mcp tools/call request failed")
+    }
+
+    // 11e: OPTIONS /mcp CORS preflight
+    if let res = sendHTTPRequest(method: "OPTIONS", path: "/mcp") {
+        assertTest(res.status == 204, "OPTIONS /mcp returns 204 No Content")
+        assertTest(res.headers["access-control-allow-origin"] == "*", "OPTIONS /mcp includes CORS allow-origin")
+        assertTest(res.headers["access-control-allow-methods"]?.contains("POST") == true, "OPTIONS /mcp includes CORS POST method")
+    } else {
+        assertTest(false, "OPTIONS /mcp request failed")
+    }
+
+    // 11f: POST /messages with direct JSON-RPC and dual return
+    let messageBody: [String: Any] = [
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": [
+            "name": "get_env",
+            "arguments": [:] as [String: Any]
+        ]
+    ]
+    let msgData = try JSONSerialization.data(withJSONObject: messageBody)
+    if let res = sendHTTPRequest(method: "POST", path: "/messages", headers: ["Content-Type": "application/json"], body: msgData) {
+        assertTest(res.status == 200, "POST /messages returns 200 OK")
+        let json = (try? JSONSerialization.jsonObject(with: res.data)) as? [String: Any]
+        let text = (((json?["result"] as? [String: Any])?["content"] as? [[String: Any]])?.first?["text"] as? String) ?? ""
+        assertTest(text.contains("export ALL_PROXY="), "POST /messages returned env script in body")
+    } else {
+        assertTest(false, "POST /messages request failed")
+    }
+
+    // 11g: Stop HTTP Server
+    httpServer.stop()
+    assertTest(!httpServer.isRunning, "MCPHTTPServer stopped cleanly")
+} catch {
+    print("Test 11 error: \(error)")
+    failed += 1
+}
+
 print("\n=== Test Results: \(passed) passed, \(failed) failed ===")
 if failed > 0 {
     exit(1)

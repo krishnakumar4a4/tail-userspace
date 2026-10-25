@@ -240,6 +240,8 @@ public struct TailUserspaceConfig: Codable, Equatable {
     public var autoStart: Bool
     public var socks5Port: Int
     public var httpProxyPort: Int
+    public var mcpPort: Int
+    public var mcpEnabled: Bool
     public var serveRoutes: [ServeRoute]
     public var remoteProxies: [RemoteProxy]
 
@@ -247,17 +249,36 @@ public struct TailUserspaceConfig: Codable, Equatable {
         autoStart: Bool = true,
         socks5Port: Int = 1055,
         httpProxyPort: Int = 1056,
+        mcpPort: Int = 1058,
+        mcpEnabled: Bool = true,
         serveRoutes: [ServeRoute] = [],
         remoteProxies: [RemoteProxy] = []
     ) {
         self.autoStart = autoStart
         self.socks5Port = socks5Port
         self.httpProxyPort = httpProxyPort
+        self.mcpPort = mcpPort
+        self.mcpEnabled = mcpEnabled
         self.serveRoutes = serveRoutes
         self.remoteProxies = remoteProxies
     }
 
     public static let `default` = TailUserspaceConfig()
+
+    enum CodingKeys: String, CodingKey {
+        case autoStart, socks5Port, httpProxyPort, mcpPort, mcpEnabled, serveRoutes, remoteProxies
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.autoStart = try container.decodeIfPresent(Bool.self, forKey: .autoStart) ?? true
+        self.socks5Port = try container.decodeIfPresent(Int.self, forKey: .socks5Port) ?? 1055
+        self.httpProxyPort = try container.decodeIfPresent(Int.self, forKey: .httpProxyPort) ?? 1056
+        self.mcpPort = try container.decodeIfPresent(Int.self, forKey: .mcpPort) ?? 1058
+        self.mcpEnabled = try container.decodeIfPresent(Bool.self, forKey: .mcpEnabled) ?? true
+        self.serveRoutes = try container.decodeIfPresent([ServeRoute].self, forKey: .serveRoutes) ?? []
+        self.remoteProxies = try container.decodeIfPresent([RemoteProxy].self, forKey: .remoteProxies) ?? []
+    }
 }
 
 /// Live daemon and Tailscale connection status

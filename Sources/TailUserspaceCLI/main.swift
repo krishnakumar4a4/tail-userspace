@@ -53,9 +53,9 @@ func printUsage() {
                          Remove a configured Outbound Remote Proxy
 
     AI / MCP COMMANDS (Model Context Protocol):
-      mcp                Start JSON-RPC 2.0 MCP server on stdio for AI assistants
+      mcp                Inspect or start the embedded HTTP MCP server for AI assistants
                          (Claude Desktop, Cursor, Antigravity, VS Code, Zed)
-                         Pass --help to view configuration snippets and available tools
+                         Pass --help to view HTTP configuration snippets and endpoints
                          
     GLOBAL OPTIONS:
       -v, --verbose      Enable verbose output (detailed steps, diagnostic paths)
@@ -155,6 +155,9 @@ func main() {
         }
         print("  SOCKS5 Proxy:    127.0.0.1:\(config.socks5Port)")
         print("  HTTP Proxy:      127.0.0.1:\(config.httpProxyPort)")
+        if config.mcpEnabled {
+            print("  MCP HTTP Server: http://127.0.0.1:\(config.mcpPort)/mcp")
+        }
 
         print("\n--- Inbound Serve Routes (Local -> Tailnet) ---")
         let targetHost = status.selfDNSName.isEmpty ? "your-node.ts.net" : status.selfDNSName
@@ -319,39 +322,45 @@ func main() {
 }
 
 func handleMCPCommand(_ args: [String]) {
+    let config = ConfigManager.shared.load()
+    var port = config.mcpPort
+
+    for arg in args {
+        if arg.hasPrefix("--port=") {
+            let parts = arg.split(separator: "=", maxSplits: 1)
+            if parts.count == 2, let p = Int(parts[1]) {
+                port = p
+            }
+        }
+    }
+
     if args.contains("-h") || args.contains("--help") {
         print("""
-        TailUserspace MCP Server - Model Context Protocol Interface
+        TailUserspace MCP Server - Model Context Protocol HTTP Interface
 
-        Starts the Model Context Protocol (MCP) server for TailUserspace over standard I/O (JSON-RPC 2.0).
-        Enables AI assistants (Claude Desktop, Cursor, Antigravity, VS Code, Zed) to manage daemon state,
-        query tailnet connectivity, configure inbound serve routes, and establish outbound remote proxies.
+        TailUserspace provides an HTTP-based Model Context Protocol (MCP) server that connects
+        AI coding assistants (Claude Desktop, Cursor, Antigravity, VS Code, Zed) directly over HTTP.
+
+        No CLI installation required! When TailUserspace.app is running in your macOS menu bar,
+        the MCP server is ALREADY listening and active on localhost:
+          • HTTP POST Endpoint: http://127.0.0.1:\(port)/mcp
+          • SSE Stream Endpoint: http://127.0.0.1:\(port)/sse
+
+        AI CLIENT CONFIGURATION (Claude Desktop / Cursor / Antigravity / Gemini CLI):
+
+        {
+          "mcpServers": {
+            "tail-userspace": {
+              "url": "http://127.0.0.1:\(port)/mcp"
+            }
+          }
+        }
+
+        (Or use the SSE transport with "url": "http://127.0.0.1:\(port)/sse")
 
         USAGE:
-          tail-userspace mcp
-          tail-userspace-mcp
-
-        AI CLIENT CONFIGURATION:
-
-        Claude Desktop (~/Library/Application Support/Claude/claude_desktop_config.json):
-        {
-          "mcpServers": {
-            "tail-userspace": {
-              "command": "tail-userspace",
-              "args": ["mcp"]
-            }
-          }
-        }
-
-        Cursor / Antigravity / Gemini CLI (mcp.json):
-        {
-          "mcpServers": {
-            "tail-userspace": {
-              "command": "tail-userspace",
-              "args": ["mcp"]
-            }
-          }
-        }
+          tail-userspace mcp [--port=<port>]
+          tail-userspace mcp --stdio
 
         AVAILABLE TOOLS (19):
           • get_status            - Live daemon PID, backend state, IPs, domain, auth URL
@@ -372,7 +381,7 @@ func handleMCPCommand(_ args: [String]) {
           • remove_remote_proxy   - Remove an outbound remote proxy
           • toggle_remote_proxy   - Enable or disable an outbound remote proxy
           • get_config            - Inspect persistent config.json
-          • update_config         - Update SOCKS5/HTTP proxy ports or autoStart
+          • update_config         - Update SOCKS5/HTTP proxy ports, mcpPort, or autoStart
 
         AVAILABLE RESOURCES (5):
           • tailuserspace://status   - Live daemon & connection state JSON
@@ -389,7 +398,35 @@ func handleMCPCommand(_ args: [String]) {
         return
     }
 
-    MCPServer.shared.runStdio()
+    if args.contains("--stdio") {
+        MCPServer.shared.runStdio()
+        return
+    }
+
+    // Attempt to start the server or verify existing running instance
+    do {
+        try MCPHTTPServer.shared.start(port: port)
+        print("✓ Started TailUserspace MCP HTTP Server:")
+        print("  • HTTP POST Endpoint: http://127.0.0.1:\(port)/mcp")
+        print("  • SSE Stream Endpoint: http://127.0.0.1:\(port)/sse")
+        print("\nAwaiting connections from AI assistants. Press Ctrl+C to stop.\n")
+
+        signal(SIGINT, SIG_IGN)
+        signal(SIGTERM, SIG_IGN)
+        let sigint = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+        sigint.setEventHandler {
+            print("\nStopping MCP HTTP Server...")
+            MCPHTTPServer.shared.stop()
+            exit(0)
+        }
+        sigint.resume()
+        dispatchMain()
+    } catch {
+        print("● TailUserspace MCP HTTP Server is already active on port \(port):")
+        print("  • HTTP POST Endpoint: http://127.0.0.1:\(port)/mcp")
+        print("  • SSE Stream Endpoint: http://127.0.0.1:\(port)/sse")
+        print("TailUserspace.app in your menu bar is actively serving MCP requests directly.")
+    }
 }
 
 struct ParsedServeOptions {

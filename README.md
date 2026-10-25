@@ -148,24 +148,25 @@ tail-userspace up -vv
 
 ---
 
-## Model Context Protocol (MCP) Server for AI Assistants
+## Model Context Protocol (MCP) HTTP Server for AI Assistants
 
-TailUserspace includes native, first-class support for the open **Model Context Protocol (MCP)**, connecting directly to **Claude Desktop**, **Cursor**, **Google Antigravity**, **Gemini CLI**, **VS Code (Cline / Roo Code)**, and **Zed**.
+TailUserspace includes an embedded **HTTP-based Model Context Protocol (MCP)** server running directly inside the menu bar application (`TailUserspace.app`).
 
-AI assistants can inspect daemon status, diagnose routing issues, expose local development servers to the tailnet (`add_serve_route`), and tunnel remote tailnet databases or services locally (`add_remote_proxy`).
+### 🌟 Zero CLI Dependency (Menu Bar App is All You Need)
+You do not need to install the CLI or configure executable paths in your AI tools. Simply keep `TailUserspace.app` running in your menu bar, and any AI assistant (**Claude Desktop**, **Cursor**, **Google Antigravity**, **Gemini CLI**, **VS Code Cline/Roo Code**, **Zed**) connects seamlessly over HTTP on localhost.
 
 ### Quick Configuration (Claude Desktop / Cursor)
 ```json
 {
   "mcpServers": {
     "tail-userspace": {
-      "command": "tail-userspace",
-      "args": ["mcp"]
+      "url": "http://127.0.0.1:1058/mcp"
     }
   }
 }
 ```
 
+* **Dual HTTP/SSE Transport**: Supports direct JSON-RPC POST (`http://127.0.0.1:1058/mcp`) and Server-Sent Events (`http://127.0.0.1:1058/sse`).
 * **19 Built-in Tools**: Full lifecycle (`get_status`, `daemon_start`, `daemon_stop`, `connect`, `disconnect`), Serve management (`add_serve_route`, `list_serve_routes`, `remove_serve_route`, `reset_serve`), Proxy management (`add_remote_proxy`, `list_remote_proxies`, `remove_remote_proxy`, `toggle_remote_proxy`), and configuration inspection.
 * **5 MCP Resources**: Directly inspect `tailuserspace://status`, `config`, `serve`, `proxies`, and daemon `logs`.
 * **3 MCP Prompts**: Pre-configured templates for diagnostics (`diagnose`), exposing services (`expose-service`), and remote tunneling (`tunnel-remote-service`).

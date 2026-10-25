@@ -64,7 +64,10 @@ public struct MCPResources {
                 "authURL": status.authURL as Any,
                 "healthWarnings": status.healthWarnings,
                 "socks5Port": config.socks5Port,
-                "httpProxyPort": config.httpProxyPort
+                "httpProxyPort": config.httpProxyPort,
+                "mcpPort": config.mcpPort,
+                "mcpEnabled": config.mcpEnabled,
+                "mcpServer": "http://127.0.0.1:\(config.mcpPort)/mcp"
             ]
             let data = try JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys])
             return (String(data: data, encoding: .utf8) ?? "{}", "application/json")

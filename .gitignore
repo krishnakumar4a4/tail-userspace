@@ -19,6 +19,7 @@ TailUserspace.app/
 TailUserspace-macOS.zip
 *.zip
 tail-userspace-cli
+tail-userspace-mcp
 
 # TailUserspace runtime sockets, state, and PID files
 *.sock

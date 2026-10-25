@@ -291,6 +291,14 @@ public struct MCPTools {
                     "autoStart": [
                         "type": "boolean",
                         "description": "Whether to auto-start daemon on app launch."
+                    ],
+                    "mcpPort": [
+                        "type": "integer",
+                        "description": "Port for local HTTP MCP server (default: 1058)."
+                    ],
+                    "mcpEnabled": [
+                        "type": "boolean",
+                        "description": "Whether the embedded HTTP MCP server is enabled (default: true)."
                     ]
                 ],
                 "required": [] as [String]
@@ -325,6 +333,9 @@ public struct MCPTools {
                 "healthWarnings": status.healthWarnings,
                 "socks5Proxy": "127.0.0.1:\(config.socks5Port)",
                 "httpProxy": "127.0.0.1:\(config.httpProxyPort)",
+                "mcpServer": "http://127.0.0.1:\(config.mcpPort)/mcp",
+                "mcpPort": config.mcpPort,
+                "mcpEnabled": config.mcpEnabled,
                 "configuredServeRoutesCount": config.serveRoutes.count,
                 "configuredRemoteProxiesCount": config.remoteProxies.count,
                 "activeEphemeralServeSessionsCount": activeEphemeral.count
@@ -355,6 +366,7 @@ public struct MCPTools {
             }
             textLines.append("  SOCKS5 Proxy:  127.0.0.1:\(config.socks5Port)")
             textLines.append("  HTTP Proxy:    127.0.0.1:\(config.httpProxyPort)")
+            textLines.append("  MCP Server:    http://127.0.0.1:\(config.mcpPort)/mcp (\(config.mcpEnabled ? "Enabled" : "Disabled"))")
 
             let errors = discrepancies.filter { $0.kind == .notOnDaemon || $0.kind == .mismatch }
             if !errors.isEmpty {
@@ -651,6 +663,12 @@ public struct MCPTools {
             }
             if let a = arguments["autoStart"] as? Bool {
                 config.autoStart = a
+            }
+            if let m = arguments["mcpPort"] as? Int {
+                config.mcpPort = m
+            }
+            if let e = arguments["mcpEnabled"] as? Bool {
+                config.mcpEnabled = e
             }
             try configManager.save(config)
             return "✓ Configuration updated successfully."

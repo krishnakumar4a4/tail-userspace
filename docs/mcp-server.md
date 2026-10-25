@@ -1,31 +1,18 @@
-# Model Context Protocol (MCP) Server Interface
+# Model Context Protocol (MCP) HTTP Server Interface
 
-TailUserspace includes a native, full-featured **Model Context Protocol (MCP)** server interface conforming to the open [Model Context Protocol](https://modelcontextprotocol.io/) specification over JSON-RPC 2.0.
+TailUserspace includes an embedded, high-performance **HTTP & Server-Sent Events (SSE)** server implementing the open [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) specification over JSON-RPC 2.0.
 
-This interface allows AI coding assistants—including **Claude Desktop**, **Cursor**, **Google Antigravity**, **Gemini CLI**, **VS Code (Cline / Roo Code)**, and **Zed**—to directly monitor, diagnose, and orchestrate Tailscale userspace networking without manual terminal commands or context switching.
+### 🌟 Zero CLI Dependency (Menu Bar App is All You Need)
+Unlike stdio-based MCP servers that require configuring paths to external CLI executables, TailUserspace runs its HTTP MCP server **directly inside the menu bar application (`TailUserspace.app`)**. 
 
----
-
-## 1. Quick Start & Execution
-
-The MCP server operates over standard I/O (`stdin` / `stdout`) using newline-delimited JSON-RPC 2.0 messages. All logging and diagnostic output are automatically redirected to `stderr`, preserving stdout strictly for pure JSON-RPC messages.
-
-You can launch the MCP server in two ways:
-
-```bash
-# Via the CLI subcommand:
-tail-userspace mcp
-
-# Via the dedicated standalone executable:
-tail-userspace-mcp
-
-# View configuration snippets and tool reference:
-tail-userspace mcp --help
-```
+As long as `TailUserspace.app` is running in your macOS menu bar:
+* **No CLI installation required**: You do not need `tail-userspace` installed in your shell `$PATH`.
+* **Instant connection**: Any AI assistant (Claude Desktop, Cursor, Google Antigravity, Gemini CLI, VS Code Cline/Roo Code, Zed) connects directly over local HTTP.
+* **Dual Transport**: Supports both direct HTTP POST (`http://127.0.0.1:1058/mcp`) and Server-Sent Events (`http://127.0.0.1:1058/sse`).
 
 ---
 
-## 2. Client Configuration
+## 1. Quick Setup & Client Configuration
 
 ### Claude Desktop
 Add TailUserspace to your Claude Desktop configuration file at `~/Library/Application Support/Claude/claude_desktop_config.json`:
@@ -34,38 +21,33 @@ Add TailUserspace to your Claude Desktop configuration file at `~/Library/Applic
 {
   "mcpServers": {
     "tail-userspace": {
-      "command": "/usr/local/bin/tail-userspace",
-      "args": ["mcp"]
+      "url": "http://127.0.0.1:1058/mcp"
     }
   }
 }
 ```
 
-*(If installed in another directory or built from source, replace `/usr/local/bin/tail-userspace` with the path to your executable or use `tail-userspace-mcp` without args).*
-
 ### Cursor
-Add to `.cursor/mcp.json` in your workspace or global Cursor settings:
+Add to `.cursor/mcp.json` in your project or global Cursor settings:
 
 ```json
 {
   "mcpServers": {
     "tail-userspace": {
-      "command": "tail-userspace",
-      "args": ["mcp"]
+      "url": "http://127.0.0.1:1058/mcp"
     }
   }
 }
 ```
 
 ### Google Antigravity / Gemini CLI
-Add to your Antigravity or Gemini CLI MCP configuration in `~/.gemini/antigravity-cli/mcp/` or project configuration:
+Add to your Antigravity or Gemini CLI MCP configuration:
 
 ```json
 {
   "mcpServers": {
     "tail-userspace": {
-      "command": "tail-userspace",
-      "args": ["mcp"]
+      "url": "http://127.0.0.1:1058/mcp"
     }
   }
 }
@@ -78,8 +60,7 @@ Add to your extension settings:
 {
   "mcpServers": {
     "tail-userspace": {
-      "command": "tail-userspace",
-      "args": ["mcp"]
+      "url": "http://127.0.0.1:1058/mcp"
     }
   }
 }
@@ -92,10 +73,7 @@ Add to `~/.config/zed/settings.json`:
 {
   "context_servers": {
     "tail-userspace": {
-      "command": {
-        "path": "tail-userspace",
-        "args": ["mcp"]
-      }
+      "url": "http://127.0.0.1:1058/mcp"
     }
   }
 }
@@ -103,11 +81,44 @@ Add to `~/.config/zed/settings.json`:
 
 ---
 
-## 3. Available Tools Reference (19 Tools)
+## 2. Endpoints & Protocol Transport
+
+| Endpoint | HTTP Method | Transport Type | Description |
+| :--- | :--- | :--- | :--- |
+| `http://127.0.0.1:1058/mcp` | `POST` | Direct JSON-RPC | Client sends JSON-RPC requests; server responds with HTTP 200 and result JSON. |
+| `http://127.0.0.1:1058/sse` | `GET` | Server-Sent Events | Opens persistent SSE stream; server sends initial `endpoint` event pointing to `/messages`. |
+| `http://127.0.0.1:1058/messages` | `POST` | SSE Postback | Client sends JSON-RPC requests; server dispatches response both over SSE stream and in HTTP body. |
+| `http://127.0.0.1:1058/` | `GET` | Health / Discovery | Returns server status, protocol version, and available endpoints JSON. |
+
+*CORS preflight (`OPTIONS`) is fully supported across all endpoints for web-based tools.*
+
+---
+
+## 3. Running Headless or via CLI (Optional)
+
+If running in a headless server environment without the GUI menu bar app:
+
+```bash
+# Start HTTP MCP server in foreground:
+tail-userspace mcp
+
+# Customize port:
+tail-userspace mcp --port=1080
+
+# View configuration help:
+tail-userspace mcp --help
+
+# Optional: Run in legacy stdio mode if needed:
+tail-userspace mcp --stdio
+```
+
+---
+
+## 4. Available Tools Reference (19 Tools)
 
 | Tool Name | Parameters | Description |
 | :--- | :--- | :--- |
-| `get_status` | *(none)* | Live status of the unprivileged daemon (PID, backend state, IPs, MagicDNS domain, auth URLs, health warnings, route counts). |
+| `get_status` | *(none)* | Live status of the unprivileged daemon (PID, backend state, IPs, MagicDNS domain, auth URLs, health warnings, MCP server URL, route counts). |
 | `daemon_start` | *(none)* | Starts the unprivileged userspace daemon, activates configured proxies, and reapplies active serve routes. |
 | `daemon_stop` | *(none)* | Gracefully shuts down the userspace daemon and terminates all outbound proxy forwarders. |
 | `connect` | `extraArgs` (array), `timeout` (number), `openBrowser` (bool) | Connects local node to tailnet (`tailscale up`). If authorization is required, returns the interactive auth URL. |
@@ -125,17 +136,15 @@ Add to `~/.config/zed/settings.json`:
 | `remove_remote_proxy` | `localPort` (int), `id` (string) | Removes an outbound proxy and shuts down its local TCP listener. |
 | `toggle_remote_proxy` | `localPort` (int), `id` (string) | Enables or disables an outbound proxy without deleting its configuration. |
 | `get_config` | *(none)* | Reads current persistent `config.json` containing proxy ports and routes. |
-| `update_config` | `socks5Port` (int), `httpProxyPort` (int), `autoStart` (bool) | Updates persistent settings such as proxy ports or auto-start behavior. |
+| `update_config` | `socks5Port` (int), `httpProxyPort` (int), `mcpPort` (int), `mcpEnabled` (bool), `autoStart` (bool) | Updates persistent settings such as proxy ports, MCP server port, or auto-start behavior. |
 
 ---
 
-## 4. Available Resources Reference (5 Resources)
-
-MCP resources allow AI clients supporting resource subscriptions or direct inspection to read live application state:
+## 5. Available Resources Reference (5 Resources)
 
 | Resource URI | MIME Type | Description |
 | :--- | :--- | :--- |
-| `tailuserspace://status` | `application/json` | Real-time daemon process state, backend state, IPs, domain, and proxy ports. |
+| `tailuserspace://status` | `application/json` | Real-time daemon process state, backend state, IPs, domain, and proxy/MCP ports. |
 | `tailuserspace://config` | `application/json` | Full contents of the user's `config.json`. |
 | `tailuserspace://serve` | `application/json` | Configured serve routes, live discrepancies, and active ephemeral CLI sessions. |
 | `tailuserspace://proxies` | `application/json` | Configured outbound remote proxies with live listener states. |
@@ -143,32 +152,8 @@ MCP resources allow AI clients supporting resource subscriptions or direct inspe
 
 ---
 
-## 5. Available Prompt Templates (3 Prompts)
-
-Pre-built prompt templates guide the AI assistant in performing common workflows:
+## 6. Available Prompt Templates (3 Prompts)
 
 1. **`diagnose`**: Performs a comprehensive health check on daemon status, network connectivity, serve routes, and proxy listeners, recommending corrective actions if discrepancies or failures are detected.
 2. **`expose-service`**: Guides the assistant in configuring an inbound HTTPS serve endpoint for a local web server, container, or development port.
 3. **`tunnel-remote-service`**: Guides the assistant in establishing an outbound SOCKS5 tunnel to reach a remote tailnet machine (e.g. database, NAS, or internal web UI) from localhost.
-
----
-
-## 6. Example AI Interactions
-
-### Example 1: Exposing a Local Development Server
-**User prompt to AI assistant:**
-> "Expose my local Next.js app running on localhost:3000 to my tailnet so my team can test it."
-
-**Assistant execution:**
-1. Calls `get_status` to ensure Tailscale userspace daemon is running.
-2. Calls `add_serve_route` with `target: "3000"`, `servePort: 443`, `proto: "https"`, `path: "/"`.
-3. Reports the secure tailnet URL (e.g. `https://my-mac.tailnet-xyz.ts.net`) with automated HTTPS.
-
-### Example 2: Accessing a Remote Tailnet Database
-**User prompt to AI assistant:**
-> "I need to connect my local database client to our Postgres database on `db-cluster.ts.net:5432`."
-
-**Assistant execution:**
-1. Calls `add_remote_proxy` with `localPort: 5432`, `remoteHost: "db-cluster.ts.net"`, `remotePort: 5432`.
-2. Verifies the local listener is active.
-3. Instructs the user to connect to `localhost:5432`.
