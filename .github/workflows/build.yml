@@ -9,7 +9,7 @@ on:
 jobs:
   build:
     name: Build, Test & Package
-    runs-on: macos-14
+    runs-on: macos-latest
 
     steps:
       - name: Checkout repository
@@ -36,4 +36,5 @@ jobs:
           path: |
             TailUserspace-macOS.zip
             tail-userspace-cli
+            tail-userspace-mcp
           retention-days: 14
